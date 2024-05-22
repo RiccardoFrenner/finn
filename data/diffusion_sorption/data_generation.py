@@ -190,13 +190,13 @@ def draw_indices(simulator, n_init, n_bound, n_colloc):
 
     rng = np.random.default_rng()
 
-    idcs_init = np.zeros((n_init, 2), dtype=np.int)
+    idcs_init = np.zeros((n_init, 2), dtype=int)
     idcs_init[:, 0] = 0
     idcs_init[:, 1] = rng.choice(len(simulator.x),
                                  size=n_init,
                                  replace=False)
 
-    idcs_bound = np.zeros((n_bound, 2), dtype=np.int)
+    idcs_bound = np.zeros((n_bound, 2), dtype=int)
     idcs_bound[:n_bound//2, 0] = rng.choice(len(simulator.t)//4 + 1,
                                   size=n_bound//2,
                                   replace=False)
