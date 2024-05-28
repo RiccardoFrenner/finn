@@ -42,41 +42,12 @@ def build_dataloader(config, mode, batch_size):
     """
     
     # Set up a dataset and dataloader
-    if config.data.type == "burger":
-        dataset = datasets.DatasetBurger(
-            root_path=os.path.abspath("../../data"),
-            dataset_type=config.data.type,
-            dataset_name=config.data.name,
-            mode=mode
-        )
-    elif config.data.type == "diffusion_sorption":
-        dataset = datasets.DatasetDiffSorp(
-            root_path=os.path.abspath("../../data"),
-            dataset_type=config.data.type,
-            dataset_name=config.data.name,
-            mode=mode
-        )
-    elif config.data.type == "diffusion_reaction":
-        dataset = datasets.DatasetDiffReact(
-            root_path=os.path.abspath("../../data"),
-            dataset_type=config.data.type,
-            dataset_name=config.data.name,
-            mode=mode
-        )
-    elif config.data.type == "allen_cahn":
-        dataset = datasets.DatasetAllenCahn(
-            root_path=os.path.abspath("../../data"),
-            dataset_type=config.data.type,
-            dataset_name=config.data.name,
-            mode=mode
-        )
-    elif config.data.type == "burger_2d":
-        dataset = datasets.DatasetBurger2D(
-            root_path=os.path.abspath("../../data"),
-            dataset_type=config.data.type,
-            dataset_name=config.data.name,
-            mode=mode
-        )
+    dataset = datasets.DatasetDiffSorp(
+        root_path=os.path.abspath("../../data"),
+        dataset_type=config.data.type,
+        dataset_name=config.data.name,
+        mode=mode
+    )
 
     dataloader = th.utils.data.DataLoader(
         dataset=dataset,
@@ -107,7 +78,7 @@ def save_model_to_file(model_src_path, config, epoch, epoch_errors_train,
         model_src_path, "checkpoints", config.model.name
     )
 
-    os.makedirs(model_save_path, exist_ok="True")
+    os.makedirs(model_save_path, exist_ok=True)
 
     # Save model weights to file
     th.save(net.state_dict(), 
