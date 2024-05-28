@@ -14,7 +14,7 @@
 	},
 
 	"data": {
-		"type": "diff-sorp",  // "burger", "burger_2d" "diffusion_sorption", "diffusion_reaction", "allen_cahn"
+		"type": "diffusion_sorption",  // "burger", "burger_2d" "diffusion_sorption", "diffusion_reaction", "allen_cahn"
 		"name": "data_train", // "data_train", "data_ext", "data_test"
 		"noise": 0.0
 	},

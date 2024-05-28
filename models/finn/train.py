@@ -33,7 +33,7 @@ def run_training(print_progress=True, model_number=None):
 
     # Hide the GPU(s) in case the user specified to use the CPU in the config
     # file
-    if config.general.device == "CPU":
+    if config.general.device == "CPU":  # TODO: Bug because uppercase?
         os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
         
@@ -43,6 +43,9 @@ def run_training(print_progress=True, model_number=None):
     # Set device on GPU if specified in the configuration file, else CPU
     # device = helpers.determine_device()
     device = th.device(config.general.device)
+    print("="*100)
+    print("Using device:", config.general.device, device)
+    print("="*100)
     
 
     # Load samples, together with x, y, and t series
@@ -57,6 +60,7 @@ def run_training(print_progress=True, model_number=None):
     dx = x[1]-x[0]
     u = th.stack((sample_c, sample_ct), dim=len(sample_c.shape))
     
+    # Add noise to everything except the initial condition
     u[1:] = u[1:] + th.normal(th.zeros_like(u[1:]),th.ones_like(u[1:])*config.data.noise)
     
     # Initialize and set up the model

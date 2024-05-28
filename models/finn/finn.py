@@ -172,6 +172,8 @@ class FINN_DiffSorp(FINN):
         
         # Separate u into c and ct
         c = u[...,0]
+        # TODO: Not using this is a bug, isn't it?
+        # Also explains why paper said there was no real difference between those two.
         ct = u[...,1]
         
         # Approximate 1/retardation_factor
@@ -268,6 +270,7 @@ class FINN_DiffSorp(FINN):
         # The odeint function receives the function state_kernel that calculates
         # du/dt, the initial condition u[0], and the time at which the values of
         # u will be saved t
+        # pred = odeint(self.state_kernel, u[0], t, options={"dtype": th.float32})  # mps needs f32
         pred = odeint(self.state_kernel, u[0], t)
         
         return pred
