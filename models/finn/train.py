@@ -44,138 +44,33 @@ def run_training(print_progress=True, model_number=None):
     # device = helpers.determine_device()
     device = th.device(config.general.device)
     
-    if config.data.type == "burger":
-        # Load samples, together with x, y, and t series
-        t = th.tensor(np.load(os.path.join(data_path, "t_series.npy")),
-                      dtype=th.float).to(device=device)
-        x = np.load(os.path.join(data_path, "x_series.npy"))
-        u = th.tensor(np.load(os.path.join(data_path, "sample.npy")),
-                             dtype=th.float).to(device=device)
-        
-        u[1:] = u[1:] + th.normal(th.zeros_like(u[1:]),th.ones_like(u[1:])*config.data.noise)
-        
-        dx = x[1]-x[0]
-    
-        # Initialize and set up the model
-        model = FINN_Burger(
-            u = u,
-            D = np.array([1.0]),
-            BC = np.array([[0.0], [0.0]]),
-            dx = dx,
-            layer_sizes = config.model.layer_sizes,
-            device = device,
-            mode="train",
-            learn_coeff=True
-        ).to(device=device)
-        
-    
-    elif config.data.type == "diffusion_sorption":
-        # Load samples, together with x, y, and t series
-        t = th.tensor(np.load(os.path.join(data_path, "t_series.npy")),
-                      dtype=th.float).to(device=device)
-        x = np.load(os.path.join(data_path, "x_series.npy"))
-        sample_c = th.tensor(np.load(os.path.join(data_path, "sample_c.npy")),
-                             dtype=th.float).to(device=device)
-        sample_ct = th.tensor(np.load(os.path.join(data_path, "sample_ct.npy")),
-                             dtype=th.float).to(device=device)
-        
-        dx = x[1]-x[0]
-        u = th.stack((sample_c, sample_ct), dim=len(sample_c.shape))
-        
-        u[1:] = u[1:] + th.normal(th.zeros_like(u[1:]),th.ones_like(u[1:])*config.data.noise)
-        
-        # Initialize and set up the model
-        model = FINN_DiffSorp(
-            u = u,
-            D = np.array([0.5, 0.1]),
-            BC = np.array([[1.0, 1.0], [0.0, 0.0]]),
-            dx = dx,
-            layer_sizes = config.model.layer_sizes,
-            device = device,
-            mode="train",
-            learn_coeff=True
-        ).to(device=device)
-    
-    elif config.data.type == "diffusion_reaction":
-        # Load samples, together with x, y, and t series
-        t = th.tensor(np.load(os.path.join(data_path, "t_series.npy")),
-                      dtype=th.float).to(device=device)
-        x = np.load(os.path.join(data_path, "x_series.npy"))
-        y = np.load(os.path.join(data_path, "y_series.npy"))
-        sample_u = th.tensor(np.load(os.path.join(data_path, "sample_u.npy")),
-                             dtype=th.float).to(device=device)
-        sample_v = th.tensor(np.load(os.path.join(data_path, "sample_v.npy")),
-                             dtype=th.float).to(device=device)
-        
-        dx = x[1]-x[0]
-        dy = y[1]-y[0]
-        
-        u = th.stack((sample_u, sample_v), dim=len(sample_u.shape))
-        u[1:] = u[1:] + th.normal(th.zeros_like(u[1:]),th.ones_like(u[1:])*config.data.noise)
-    
-        # Initialize and set up the model
-        model = FINN_DiffReact(
-            u = u,
-            D = np.array([5E-4/(dx**2), 1E-3/(dx**2)]),
-            BC = np.zeros((4,2)),
-            dx = dx,
-            dy = dy,
-            layer_sizes = config.model.layer_sizes,
-            device = device,
-            mode="train",
-            learn_coeff=True
-        ).to(device=device)
-    
-    elif config.data.type == "allen_cahn":
-        # Load samples, together with x, y, and t series
-        t = th.tensor(np.load(os.path.join(data_path, "t_series.npy")),
-                      dtype=th.float).to(device=device)
-        x = np.load(os.path.join(data_path, "x_series.npy"))
-        u = th.tensor(np.load(os.path.join(data_path, "sample.npy")),
-                             dtype=th.float).to(device=device)
-        
-        u[1:] = u[1:] + th.normal(th.zeros_like(u[1:]),th.ones_like(u[1:])*config.data.noise)
-        
-        dx = x[1]-x[0]
-    
-        # Initialize and set up the model
-        model = FINN_AllenCahn(
-            u = u,
-            D = np.array([0.6]),
-            BC = np.array([[0.0], [0.0]]),
-            dx = dx,
-            layer_sizes = config.model.layer_sizes,
-            device = device,
-            mode="train",
-            learn_coeff=True
-        ).to(device=device)
 
-    elif config.data.type == "burger_2d":
-        # Load samples, together with x, y, and t series
-        t = th.tensor(np.load(os.path.join(data_path, "t_series.npy")),
-                      dtype=th.float).to(device=device)
-        x = np.load(os.path.join(data_path, "x_series.npy"))
-        y = np.load(os.path.join(data_path, "y_series.npy"))
-        u = th.tensor(np.load(os.path.join(data_path, "sample.npy")),
-                             dtype=th.float).to(device=device)
-        
-        u[1:] = u[1:] + th.normal(th.zeros_like(u[1:]),th.ones_like(u[1:])*config.data.noise)
-        
-        dx = x[1]-x[0]
-        dy = y[1]-y[0]
-                         
-        # Initialize and set up the model
-        model = FINN_Burger2D(
-            u = u,
-            D = np.array([1.75]),
-            BC = np.zeros((4,1)),
-            dx = dx,
-            dy = dy,
-            layer_sizes = config.model.layer_sizes,
-            device = device,
-            mode="train",
-            learn_coeff=True
-        ).to(device=device)
+    # Load samples, together with x, y, and t series
+    t = th.tensor(np.load(os.path.join(data_path, "t_series.npy")),
+                    dtype=th.float).to(device=device)
+    x = np.load(os.path.join(data_path, "x_series.npy"))
+    sample_c = th.tensor(np.load(os.path.join(data_path, "sample_c.npy")),
+                            dtype=th.float).to(device=device)
+    sample_ct = th.tensor(np.load(os.path.join(data_path, "sample_ct.npy")),
+                            dtype=th.float).to(device=device)
+    
+    dx = x[1]-x[0]
+    u = th.stack((sample_c, sample_ct), dim=len(sample_c.shape))
+    
+    u[1:] = u[1:] + th.normal(th.zeros_like(u[1:]),th.ones_like(u[1:])*config.data.noise)
+    
+    # Initialize and set up the model
+    model = FINN_DiffSorp(
+        u = u,
+        D = np.array([0.5, 0.1]),
+        BC = np.array([[1.0, 1.0], [0.0, 0.0]]),
+        dx = dx,
+        layer_sizes = config.model.layer_sizes,
+        device = device,
+        mode="train",
+        learn_coeff=True
+    ).to(device=device)
+
 
     # Count number of trainable parameters
     pytorch_total_params = sum(
