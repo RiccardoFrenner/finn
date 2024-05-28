@@ -1,11 +1,5 @@
-import numpy as np
 import torch as th
 import os
-import time
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
-
-import utils.datasets as datasets
 
 
 def determine_device(print_progress=False):
@@ -29,35 +23,6 @@ def determine_device(print_progress=False):
         print()
         
     return device
-
-
-def build_dataloader(config, mode, batch_size):
-    """
-    This function creates a dataset and return the appropriate dataloader to
-    iterate over this dataset
-    :param config: The general configurations of the model
-    :param mode: Any of "train", "val", or "test"
-    :param batch_size: The number of samples per batch
-    :return: A PyTorch dataloader object
-    """
-    
-    # Set up a dataset and dataloader
-    dataset = datasets.DatasetDiffSorp(
-        root_path=os.path.abspath("../../data"),
-        dataset_type=config.data.type,
-        dataset_name=config.data.name,
-        mode=mode
-    )
-
-    dataloader = th.utils.data.DataLoader(
-        dataset=dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=True
-    )
-
-    return dataloader
 
 
 def save_model_to_file(model_src_path, config, epoch, epoch_errors_train,
