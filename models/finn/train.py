@@ -137,8 +137,8 @@ def run_training(print_progress=True, model_number=None):
             
             mse.backward()
             
-            print(mse.item())
-            print(model.D)
+            # print(mse.item())
+            # print(model.D)
                 
             return mse
         
