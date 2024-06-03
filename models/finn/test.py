@@ -158,6 +158,7 @@ def run_testing(print_progress=False, visualize=False, model_number=None):
         ax.set_ylabel('$u(t,x)$')    
         ax.set_xlim([x.min(), x.max()])
         ax.set_ylim([-1.1, 1.1])
+        ax.legend()
     
         anim = animation.FuncAnimation(fig,
                                        animate_1d,
@@ -166,11 +167,64 @@ def run_testing(print_progress=False, visualize=False, model_number=None):
                                        interval=20)
         plt.tight_layout()
         plt.draw()
-        plt.show()
+        # plt.show()
         
         plt.figure()
         plt.plot(x,u_hat[:,-1])
         plt.scatter(x,u[:,-1])
+
+
+        RETARDATION_FACTOR_FUNCTION = "freundlich"  # "linear", "freundlich", "langmuir"
+        DIFFUSION_COEFFICIENT = 0.0005
+        POROSITY = 0.29
+        RHO_S = 2880
+        K_F = 1.016/RHO_S
+        N_F = 0.874
+        S_MAX = 1/1700
+        KL = 1
+        KD = 0.429/1000
+        SOLUBILITY = 1.0
+        T_MAX = 2500
+        T_STEPS = 501
+            
+        X_LEFT = 0.0
+        X_RIGHT = 1.0
+        X_STEPS = 13
+
+        import sys
+        sys.path.append("/Users/r/Documents/stud/ss24/p3inn_finn/src/finn/data/diffusion_sorption/")
+        from simulator import Simulator
+        simulator = Simulator(
+            ret_factor_fun=RETARDATION_FACTOR_FUNCTION,
+            diffusion_coefficient=DIFFUSION_COEFFICIENT,
+            porosity=POROSITY,
+            rho_s=RHO_S,
+            k_f=K_F,
+            n_f=N_F,
+            s_max=S_MAX,
+            kl=KL,
+            kd=KD,
+            solubility=SOLUBILITY,
+            t_max=T_MAX,
+            t_steps=T_STEPS,
+            x_left=X_LEFT,
+            x_right=X_RIGHT,
+            x_steps=X_STEPS,
+            train_data=True
+        )
+
+        fig, ax = plt.subplots()
+        
+        c = u[:simulator.Nx, -1]
+        # print(c.shape)
+        # print(simulator.retardation(c).shape)
+        # exit()
+        ax.plot(c, simulator.retardation(c), label="Retardation")
+        ret_inv = ((model.func_nn(c.unsqueeze(-1)) * 10**model.p_exp)[...,0]).detach().numpy()
+        ax.plot(c, 1/ret_inv, label="Approx. Retardation")
+        print(1/ret_inv, ret_inv, sep="\n\n")
+        ax.legend()
+        plt.show()
 
     return model
 
