@@ -10,7 +10,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import StandardScaler
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Dense
 
@@ -98,93 +98,6 @@ class CL_dataLoader:
         if len(inputsOutputs_np.shape) > 1:
             numInputsOutputs = inputsOutputs_np.shape[1]
         return numInputsOutputs
-
-    # --- convert series to supervised learning
-    def series_to_supervised(self, data_in, data_out, n_in=1, n_out=1, dropnan=True):
-        n_vars_in = 1 if type(data_in) is list else data_in.shape[1]
-        n_vars_out = 1 if type(data_out) is list else data_out.shape[1]
-        df_in = pd.DataFrame(data_in)
-        df_out = pd.DataFrame(data_out)
-        cols, names = list(), list()
-        # input sequence (t-n, ... t-1)
-        for i in range(n_in, 0, -1):
-            cols.append(df_in.shift(i))
-            names += [("var_in%d(t-%d)" % (j + 1, i)) for j in range(n_vars_in)]
-        # forecast sequence (t, t+1, ... t+n)
-        for i in range(0, n_out):
-            cols.append(df_out.shift(-i))
-            if i == 0:
-                names += [("var_out%d(t)" % (j + 1)) for j in range(n_vars_out)]
-            else:
-                names += [("var_out%d(t+%d)" % (j + 1, i)) for j in range(n_vars_out)]
-        # put it all together
-        agg = pd.concat(cols, axis=1)
-        agg.columns = names
-        # drop rows with NaN values
-        if dropnan:
-            agg.dropna(inplace=True)
-        return agg
-
-
-class CL_EarlyStopping:
-    def __init__(
-        self,
-        min_delta=0,
-        patience=0,
-        verbose=0,
-        mode="auto",
-        baseline=None,
-        restore_best_weights=False,
-    ):
-        self.monitor = monitor
-        self.patience = patience
-        self.verbose = verbose
-        self.baseline = baseline
-        self.min_delta = abs(min_delta)
-        self.wait = 0
-
-        if mode not in ["auto", "min", "max"]:
-            print(
-                "--- Warning: EarlyStopping mode {} is unknown".format(mode),
-                "auto mode will be used",
-            )
-            mode = "auto"
-
-        if mode == "min":
-            self.monitor_op = np.less
-        elif mode == "max":
-            self.monitor_op = np.greater
-
-        if self.monitor_op == np.greater:
-            self.min_delta *= 1
-        else:
-            self.min_delta *= -1
-
-    def init_early_stopping(self):
-        self.wait = 0
-        self.stopped_epoch = 0
-        if self.baseline is not None:
-            self.best = self.baseline
-        else:
-            self.best = np.Inf if self.monitor_op == np.less else -np.Inf
-            # self.best = np.Inf
-        self.best_weights = None
-
-    def earlyStop_onEpochEnd_eval(self, epoch, current_loss):
-        if self.monitor_op(current_loss - self.min_delta, self.best):
-            self.best = current_loss
-            self.wait = 0
-            if self.restore_best_weights:
-                self.best_weights = self.model.get
-
-    def on_train_begin(self):
-        self.wait = 0
-        self.stopped_epoch = 0
-        if self.baseline is not None:
-            self.best = self.baseline
-        else:
-            self.best = np.Inf if self.monitor_op == np.less else -np.Inf
-        self.best_weights = None
 
 
 class CL_trainer:
@@ -1952,7 +1865,6 @@ class CL_UQ_Net_train_steps:
                 loss += l.bias_regularizer(l.bias)
         return loss
 
-    """ Training/validation for mean values (For Non-batch training)"""
 
     @tf.function
     def train_step_mean(
@@ -1965,6 +1877,7 @@ class CL_UQ_Net_train_steps:
         yTest=None,
         testDataEvaluationDuringTrain=False,
     ):
+        """ Training/validation for mean values (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_mean(xTrain, training=True)
             train_loss = self.criterion_mean(yTrain, train_predictions)
@@ -1995,10 +1908,10 @@ class CL_UQ_Net_train_steps:
         if self.exponential_decay:
             self.global_step_0.assign_add(1)
 
-    """ Training/validation/testing for mean values (batch version) """
 
     @tf.function
     def batch_train_step_mean(self, x_batch_train, y_batch_train):
+        """ Training/validation/testing for mean values (batch version) """
         with tf.GradientTape() as tape:
             batch_train_predictions = self.net_mean(x_batch_train, training=True)
             batch_train_loss = self.criterion_mean(
@@ -2031,7 +1944,6 @@ class CL_UQ_Net_train_steps:
             batch_test_loss = self.criterion_mean(y_batch_test, batch_test_predictions)
         self.test_loss_net_mean(batch_test_loss)
 
-    """ Training/validation for upper boundary (For Non-batch training) """
 
     @tf.function
     def train_step_up(
@@ -2044,6 +1956,7 @@ class CL_UQ_Net_train_steps:
         yTest=None,
         testDataEvaluationDuringTrain=False,
     ):
+        """ Training/validation for upper boundary (For Non-batch training) """
         with tf.GradientTape() as tape:
             train_predictions = self.net_std_up(xTrain, training=True)
             train_loss = self.criterion_std(yTrain, train_predictions)
@@ -2072,10 +1985,10 @@ class CL_UQ_Net_train_steps:
         if self.exponential_decay:
             self.global_step_1.assign_add(1)
 
-    """ Training/validation/testing for UP values (batch version) """
 
     @tf.function
     def batch_train_step_up(self, x_batch_train, y_batch_train):
+        """ Training/validation/testing for UP values (batch version) """
         with tf.GradientTape() as tape:
             batch_train_predictions = self.net_std_up(x_batch_train, training=True)
             batch_train_loss = self.criterion_std(
@@ -2107,7 +2020,6 @@ class CL_UQ_Net_train_steps:
             batch_test_loss = self.criterion_std(y_batch_test, batch_test_predictions)
         self.test_loss_net_std_up(batch_test_loss)
 
-    """ Training/validation for lower boundary (For Non-batch training)"""
 
     @tf.function
     def train_step_down(
@@ -2120,6 +2032,7 @@ class CL_UQ_Net_train_steps:
         yTest=None,
         testDataEvaluationDuringTrain=False,
     ):
+        """ Training/validation for lower boundary (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_std_down(xTrain, training=True)
             train_loss = self.criterion_std(yTrain, train_predictions)
@@ -2148,10 +2061,10 @@ class CL_UQ_Net_train_steps:
         if self.exponential_decay:
             self.global_step_2.assign_add(1)
 
-    """ Training/validation/testing for DOWN values (batch version) """
 
     @tf.function
     def batch_train_step_down(self, x_batch_train, y_batch_train):
+        """ Training/validation/testing for DOWN values (batch version) """
         with tf.GradientTape() as tape:
             batch_train_predictions = self.net_std_down(x_batch_train, training=True)
             batch_train_loss = self.criterion_std(
