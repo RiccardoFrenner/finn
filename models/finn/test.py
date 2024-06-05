@@ -219,10 +219,22 @@ def run_testing(print_progress=False, visualize=False, model_number=None):
         # print(c.shape)
         # print(simulator.retardation(c).shape)
         # exit()
-        ax.plot(c, simulator.retardation(c), label="Retardation")
+        ret_exact = (simulator.retardation(c)).detach().numpy()
+        print("="*100)
+        print(ret_exact - ret_exact[0])
+        print("="*100)
+        ax.plot(c, (ret_exact - ret_exact[0] - 0.125), label="Retardation")
         ret_inv = ((model.func_nn(c.unsqueeze(-1)) * 10**model.p_exp)[...,0]).detach().numpy()
-        ax.plot(c, 1/ret_inv, label="Approx. Retardation")
-        print(1/ret_inv, ret_inv, sep="\n\n")
+        ret_approx = 1/ret_inv
+        ax.plot(c, -(ret_approx  - ret_approx[0]), "-", label="Approx. Retardation")
+        
+        # from finn.pdf page 16
+        # phi = 0.29
+        # rho_s = 2880
+        # k = 3.5e-4
+        # nf = 0.874
+        # R = 1 + (1-phi)/phi * rho_s * k * nf * c**(nf - 1)
+        # ax.plot(c, R, label="Approx. Retardation2")
         ax.legend()
         plt.show()
 
