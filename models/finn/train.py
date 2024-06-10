@@ -135,13 +135,13 @@ def run_training(print_progress=True, model_number=None):
 
             mse = criterion(u_hat, u)
 
-            c = th.linspace(0.0, 2.0, 100).view(-1,1).to(device)
+            c = th.linspace(0,2,501).unsqueeze(-1).to(device)
             ret_inv = model.func_nn(c)
             # We punish ret_inv[i] - ret_inv[i+1] > 0  <==> ret_inv[i] > ret_inv[i+1] 
             # aka. monotonically decreasing ret_inv is punished
             # thus monotonically increasing ret is punished
             # thus monotonically decreasing ret will yield a smaller loss
-            mse += 100 * th.sum(th.relu(ret_inv[:-1] - ret_inv[1:]))
+            mse += 100 * th.mean(th.relu(ret_inv[:-1] - ret_inv[1:]))
             
             mse.backward()
             
