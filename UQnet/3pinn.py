@@ -53,7 +53,7 @@ class CL_plotter:
         saveFigPath=None,
     ):
         iter_arr = np.arange(len(train_loss))
-        plt.plot(iter_arr, validation_loss, label=validPlotLabel)
+        plt.plot(iter_arr, valid_loss, label=validPlotLabel)
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
         plt.title(title)
@@ -2243,7 +2243,6 @@ def main():
         default="boston",
         help="example data names: boston, concrete, energy, kin8nm, wine, yacht",
     )
-    parser.add_argument("--mode", type=str, default="auto", help="auto or manual mode")
     parser.add_argument("--quantile", type=float, default=0.95)
     args = parser.parse_args()
 
@@ -2259,10 +2258,7 @@ def main():
     ##########################################################
     data_dir = "./datasets/UCI_datasets/"
     dataLoader = CL_dataLoader(original_data_path=data_dir)
-    if args.data == "energy" or args.data == "naval":
-        X, Y, _ = dataLoader.load_single_dataset(args.data)
-    else:
-        X, Y = dataLoader.load_single_dataset(args.data)
+    X, Y = dataLoader.load_single_dataset(args.data)
     if len(Y.shape) == 1:
         Y = Y.reshape(-1, 1)
 
@@ -2306,11 +2302,12 @@ def main():
         args.quantile
     )  # # target percentile for optimization step# target percentile for optimization step,
     # 0.95 by default if not specified
+    configs["split_seed"] = "WhatIsThis?"
     configs["experiment_id"] = 1
     configs["verbose"] = 1
-    configs["save_loss_history"] = False
+    configs["save_loss_history"] = True
     configs["save_loss_history_path"] = "./Results_PI3NN/loss_history/"
-    configs["plot_loss_history"] = False
+    configs["plot_loss_history"] = True
     configs["plot_loss_history_path"] = "./Results_PI3NN/loss_curves/"
 
     ######################################################################################
@@ -2318,58 +2315,57 @@ def main():
     # configs['quantile_list'] = np.arange(0.05, 1.00, 0.05) # 0.05-0.95
     ######################################################################################
 
-    if args.mode == "manual":
-        print("--- Running on manual mode.")
-        ### specify hypar-parameters for the training
-        configs["seed"] = 10  # general random seed
-        configs["num_neurons_mean"] = [50]  # hidden layer(s) for the 'MEAN' network
-        configs["num_neurons_up"] = [50]  # hidden layer(s) for the 'UP' network
-        configs["num_neurons_down"] = [50]  # hidden layer(s) for the 'DOWN' network
-        configs["Max_iter"] = 5000  # 5000,
-        configs["lr"] = [0.02, 0.02, 0.02]  # 0.02         # learning rate
-        configs["optimizers"] = ["Adam", "Adam", "Adam"]  # ['SGD', 'SGD', 'SGD'],
-        configs["exponential_decay"] = True
-        configs["decay_steps"] = 3000  # 3000  # 10
-        configs["decay_rate"] = 0.9  # 0.6
-        configs["saveWeights"] = False
-        configs["loadWeights_test"] = False
-        configs["early_stop"] = True
-        configs["early_stop_start_iter"] = 100  # 60
-        configs["wait_patience"] = 300
-        configs["restore_best_weights"] = True
-        configs["batch_training"] = False
-        configs["batch_size"] = 256
-        configs["batch_shuffle"] = True
-        configs["batch_shuffle_buffer"] = 1024
-        print("--- Dataset: {}".format(configs["data_name"]))
-        random.seed(configs["seed"])
-        np.random.seed(configs["seed"])
-        tf.random.set_seed(configs["seed"])
+    print("--- Running on manual mode.")
+    ### specify hypar-parameters for the training
+    configs["seed"] = 10  # general random seed
+    configs["num_neurons_mean"] = [50]  # hidden layer(s) for the 'MEAN' network
+    configs["num_neurons_up"] = [50]  # hidden layer(s) for the 'UP' network
+    configs["num_neurons_down"] = [50]  # hidden layer(s) for the 'DOWN' network
+    configs["Max_iter"] = 5000  # 5000,
+    configs["lr"] = [0.02, 0.02, 0.02]  # 0.02         # learning rate
+    configs["optimizers"] = ["Adam", "Adam", "Adam"]  # ['SGD', 'SGD', 'SGD'],
+    configs["exponential_decay"] = True
+    configs["decay_steps"] = 3000  # 3000  # 10
+    configs["decay_rate"] = 0.9  # 0.6
+    configs["saveWeights"] = False
+    configs["loadWeights_test"] = False
+    configs["early_stop"] = True
+    configs["early_stop_start_iter"] = 100  # 60
+    configs["wait_patience"] = 300
+    configs["restore_best_weights"] = True
+    configs["batch_training"] = False
+    configs["batch_size"] = 256
+    configs["batch_shuffle"] = True
+    configs["batch_shuffle_buffer"] = 1024
+    print("--- Dataset: {}".format(configs["data_name"]))
+    random.seed(configs["seed"])
+    np.random.seed(configs["seed"])
+    tf.random.set_seed(configs["seed"])
 
-        """ Create network instances"""
-        net_mean = UQ_Net_mean_TF2(configs, num_inputs, num_outputs)
-        net_up = UQ_Net_std_TF2(configs, num_inputs, num_outputs, net="up")
-        net_down = UQ_Net_std_TF2(configs, num_inputs, num_outputs, net="down")
+    """ Create network instances"""
+    net_mean = UQ_Net_mean_TF2(configs, num_inputs, num_outputs)
+    net_up = UQ_Net_std_TF2(configs, num_inputs, num_outputs, net="up")
+    net_down = UQ_Net_std_TF2(configs, num_inputs, num_outputs, net="down")
 
-        # ''' Initialize trainer and conduct training/optimizations '''
-        trainer = CL_trainer(
-            configs,
-            net_mean,
-            net_up,
-            net_down,
-            xTrain,
-            yTrain,
-            xValid=xValid,
-            yValid=yValid,
-            xTest=xTest,
-            yTest=yTest,
-            testDataEvaluationDuringTrain=False,
-        )
-        trainer.train()  # training for 3 networks
-        trainer.boundaryOptimization(verbose=1)  # boundary optimization
-        trainer.testDataPrediction()  # evaluation of the trained nets on testing data
-        trainer.capsCalculation(final_evaluation=True, verbose=1)  # metrics calculation
-        # trainer.saveResultsToTxt()      # save results to txt file
+    # ''' Initialize trainer and conduct training/optimizations '''
+    trainer = CL_trainer(
+        configs,
+        net_mean,
+        net_up,
+        net_down,
+        xTrain,
+        yTrain,
+        xValid=xValid,
+        yValid=yValid,
+        xTest=xTest,
+        yTest=yTest,
+        testDataEvaluationDuringTrain=False,
+    )
+    trainer.train()  # training for 3 networks
+    trainer.boundaryOptimization(verbose=1)  # boundary optimization
+    trainer.testDataPrediction()  # evaluation of the trained nets on testing data
+    trainer.capsCalculation(final_evaluation=True, verbose=1)  # metrics calculation
+    trainer.saveResultsToTxt()      # save results to txt file
 
 
 if __name__ == "__main__":
