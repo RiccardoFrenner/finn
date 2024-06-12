@@ -292,11 +292,6 @@ class CL_trainer:
             )
 
     def train(self):
-        ## only print out the intermediate test evaluation for first testing data for simplicity
-        # self.xTest = xTest
-        # self.yTest = yTest
-
-        """prepare results txt file"""
         results_path = (
             "./Results_PI3NN/" + self.configs["data_name"] + "_PI3NN_results.txt"
         )
@@ -310,8 +305,6 @@ class CL_trainer:
                 + "R2"
                 + "\n"
             )
-
-        """ Main training iterations """
 
         self.main_train_step(
             network_type="mean",
@@ -330,7 +323,10 @@ class CL_trainer:
             max_iter=self.configs["Max_iter"],
         )
 
-        self.xValid_up, self.yValid_up, self.xValid_down, self.yValid_down = self.createUpDownTrainingData()
+        # IMPORTANT: has to be created after mean network finished training
+        self.xValid_up, self.yValid_up, self.xValid_down, self.yValid_down = (
+            self.createUpDownTrainingData()
+        )
 
         self.main_train_step(
             network_type="up",
@@ -365,7 +361,6 @@ class CL_trainer:
             valid_losses=self.valid_loss_down_list,
             max_iter=self.configs["Max_iter"],
         )
-
 
     def createUpDownTrainingData(self):
         """Generate up and down training/validation data"""
