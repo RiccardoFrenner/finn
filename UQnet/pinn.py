@@ -14,22 +14,6 @@ from sklearn.preprocessing import StandardScaler
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Dense
 
-matplotlib.use("TkAgg")
-
-
-os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-num_threads = 8
-os.environ["OMP_NUM_THREADS"] = "8"
-os.environ["TF_NUM_INTRAOP_THREADS"] = "8"
-os.environ["TF_NUM_INTEROP_THREADS"] = "8"
-tf.config.threading.set_inter_op_parallelism_threads(num_threads)
-tf.config.threading.set_intra_op_parallelism_threads(num_threads)
-tf.config.set_soft_device_placement(True)
-
-# Force using CPU globally by hiding GPU(s), comment the line of code below to enable GPU
-tf.config.set_visible_devices([], "GPU")
-
 
 class CL_plotter:
     def __init__(self):
@@ -89,7 +73,13 @@ class CL_dataLoader:
         return X, Y
 
     def load_single_dataset(self, name, Y_data="default"):
-        X, Y = self.load_boston(Y_data=Y_data)
+        if name == "boston":
+            X, Y = self.load_boston(Y_data=Y_data)
+        else:
+            print("Loading artificial dataset")
+            from pathlib import Path
+            X = np.load(Path(self.data_dir).parent /  "X_arti.npy").reshape(-1, 1)
+            Y = np.load(Path(self.data_dir).parent /  "Y_arti.npy")
         return X, Y
 
     def getNumInputsOutputs(self, inputsOutputs_np):
@@ -2236,12 +2226,28 @@ class CL_boundary_optimizer:
 
 
 def main():
+    matplotlib.use("TkAgg")
+
+    os.environ["TF_XLA_FLAGS"] = "--tf_xla_enable_xla_devices"
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+    num_threads = 8
+    os.environ["OMP_NUM_THREADS"] = "8"
+    os.environ["TF_NUM_INTRAOP_THREADS"] = "8"
+    os.environ["TF_NUM_INTEROP_THREADS"] = "8"
+    tf.config.threading.set_inter_op_parallelism_threads(num_threads)
+    tf.config.threading.set_intra_op_parallelism_threads(num_threads)
+    tf.config.set_soft_device_placement(True)
+
+    # Force using CPU globally by hiding GPU(s), comment the line of code below to enable GPU
+    tf.config.set_visible_devices([], "GPU")
+
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--data",
         type=str,
-        default="boston",
-        help="example data names: boston, concrete, energy, kin8nm, wine, yacht",
+        default="artificial",
+        help="example data names: boston, artificial",
     )
     parser.add_argument("--quantile", type=float, default=0.95)
     args = parser.parse_args()
@@ -2366,6 +2372,21 @@ def main():
     trainer.testDataPrediction()  # evaluation of the trained nets on testing data
     trainer.capsCalculation(final_evaluation=True, verbose=1)  # metrics calculation
     trainer.saveResultsToTxt()      # save results to txt file
+
+    fig, ax = plt.subplots()
+    ax.plot(xTrain, yTrain, ".")
+    y_U_PI_array_train = (
+        (trainer.train_output + trainer.c_up * trainer.train_output_up).numpy().flatten()
+    )
+    y_L_PI_array_train = (
+        (trainer.train_output - trainer.c_down * trainer.train_output_down).numpy().flatten()
+    )
+    y_mean = trainer.train_output.numpy().flatten()
+    sort_indices = np.argsort(xTrain.flatten())
+    ax.plot(xTrain.flatten()[sort_indices], y_mean[sort_indices], "-")
+    ax.plot(xTrain.flatten()[sort_indices], y_U_PI_array_train[sort_indices], "-")
+    ax.plot(xTrain.flatten()[sort_indices], y_L_PI_array_train[sort_indices], "-")
+    plt.show()
 
 
 if __name__ == "__main__":
