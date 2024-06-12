@@ -313,402 +313,59 @@ class CL_trainer:
 
         """ Main training iterations """
 
-        #######################################
-        ##### ''' Training for the MEAN ''' ###
-        #######################################
+        self.main_train_step(
+            network_type="mean",
+            network=self.trainSteps.net_mean,
+            train_step_fun=self.trainSteps.train_step_mean,
+            train_loss=self.trainSteps.train_loss_net_mean,
+            valid_loss=self.trainSteps.valid_loss_net_mean,
+            test_loss=self.trainSteps.test_loss_net_mean,
+            x_train=self.xTrain,
+            y_train=self.yTrain,
+            x_valid=self.xValid,
+            y_valid=self.yValid,
+            iterations=self.iter_mean_list,
+            train_losses=self.train_loss_mean_list,
+            valid_losses=self.valid_loss_mean_list,
+            max_iter=self.configs["Max_iter"],
+        )
 
-        print("--- Start training for MEAN ---")
-        stop_training = False
-        early_stop_wait = 0
-        min_delta = 0
+        self.xValid_up, self.yValid_up, self.xValid_down, self.yValid_down = self.createUpDownTrainingData()
 
-        stopped_baseline = None
-        if stopped_baseline is not None:
-            best_loss = stopped_baseline
-        else:
-            best_loss = np.Inf
-        best_weights = None
+        self.main_train_step(
+            network_type="up",
+            network=self.trainSteps.net_std_up,
+            train_step_fun=self.trainSteps.train_step_up,
+            train_loss=self.trainSteps.train_loss_net_std_up,
+            valid_loss=self.trainSteps.valid_loss_net_std_up,
+            test_loss=self.trainSteps.test_loss_net_std_up,
+            x_train=self.xTrain_up,
+            y_train=self.yTrain_up,
+            x_valid=self.xValid_up,
+            y_valid=self.yValid_up,
+            iterations=self.iter_up_list,
+            train_losses=self.train_loss_up_list,
+            valid_losses=self.valid_loss_up_list,
+            max_iter=self.configs["Max_iter"],
+        )
 
-        self.trainSteps.train_loss_net_mean.reset_state()
-        self.trainSteps.valid_loss_net_mean.reset_state()
-        self.trainSteps.test_loss_net_mean.reset_state()
+        self.main_train_step(
+            network_type="down",
+            network=self.trainSteps.net_std_down,
+            train_step_fun=self.trainSteps.train_step_down,
+            train_loss=self.trainSteps.train_loss_net_std_down,
+            valid_loss=self.trainSteps.valid_loss_net_std_down,
+            test_loss=self.trainSteps.test_loss_net_std_down,
+            x_train=self.xTrain_down,
+            y_train=self.yTrain_down,
+            x_valid=self.xValid_down,
+            y_valid=self.yValid_down,
+            iterations=self.iter_down_list,
+            train_losses=self.train_loss_down_list,
+            valid_losses=self.valid_loss_down_list,
+            max_iter=self.configs["Max_iter"],
+        )
 
-        for i in range(self.configs["Max_iter"]):
-            self.trainSteps.train_loss_net_mean.reset_state()  # TODO: This line was not here before
-            self.trainSteps.valid_loss_net_mean.reset_state()
-            self.trainSteps.test_loss_net_mean.reset_state()
-
-            self.trainSteps.train_step_mean(
-                self.xTrain, self.yTrain, self.xValid, self.yValid
-            )
-
-            current_train_loss = self.trainSteps.train_loss_net_mean.result()
-            current_valid_loss = self.trainSteps.valid_loss_net_mean.result()
-
-            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
-                print(
-                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                )
-                break
-
-            if i % 100 == 0:
-                print(
-                    "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
-                        i, current_train_loss, current_valid_loss
-                    )
-                )
-
-            self.train_loss_mean_list.append(current_train_loss.numpy())
-            self.valid_loss_mean_list.append(current_valid_loss.numpy())
-
-            if (
-                self.configs["early_stop"]
-                and i >= self.configs["early_stop_start_iter"]
-            ):
-                if np.less(current_valid_loss - min_delta, best_loss):
-                    best_loss = current_valid_loss
-                    early_stop_wait = 0
-                    if self.configs["restore_best_weights"]:
-                        best_weights = self.trainSteps.net_mean.get_weights()
-                else:
-                    early_stop_wait += 1
-                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                    if early_stop_wait >= self.configs["wait_patience"]:
-                        stop_training = True
-                        if self.configs["restore_best_weights"]:
-                            if best_weights is not None:
-                                if self.configs["verbose"] > 0:
-                                    print(
-                                        "--- Restoring mean model weights from the end of the best iteration"
-                                    )
-                                self.trainSteps.net_mean.set_weights(best_weights)
-                        if self.configs["saveWeights"]:
-                            print(
-                                "--- Saving best model weights to h5 file: {}_best_mean_iter_{}.h5".format(
-                                    self.configs["data_name"], str(i + 1)
-                                )
-                            )
-                            self.trainSteps.net_mean.save_weights(
-                                os.getcwd()
-                                + "/Results_PI3NN/checkpoints_mean/"
-                                + self.configs["data_name"]
-                                + "_best_mean_iter_"
-                                + str(i + 1)
-                                + ".h5"
-                            )
-            self.iter_mean_list.append(i)
-            if stop_training:
-                print(
-                    "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                        i + 1, current_train_loss, current_valid_loss
-                    )
-                )
-                break
-
-        if self.configs["plot_loss_history"]:
-            self.plotter.plotTrainValidationLoss(
-                self.train_loss_mean_list,
-                self.valid_loss_mean_list,  # test_loss=self.test_loss_mean_list,
-                trainPlotLabel="training loss",
-                validPlotLabel="valid loss",
-                xlabel="iterations",
-                ylabel="Loss",
-                title="("
-                + self.saveFigPrefix
-                + ")Train/valid (and test) loss for mean values",
-                gridOn=True,
-                legendOn=True,
-                saveFigPath=self.configs["plot_loss_history_path"]
-                + self.saveFigPrefix
-                + "_MEAN_loss_seed_"
-                + str(self.configs["split_seed"])
-                + "_"
-                + str(self.configs["seed"])
-                + ".png",
-            )
-            # xlim=[50, len(train_loss_mean_list)])
-        if self.configs["save_loss_history"]:
-            loss_mean_dict = {
-                "iter": self.iter_mean_list,
-                "train_loss": self.train_loss_mean_list,
-                "valid_loss": self.valid_loss_mean_list,
-            }
-
-            df_loss_MEAN = pd.DataFrame(loss_mean_dict)
-            df_loss_MEAN.to_csv(
-                self.configs["save_loss_history_path"]
-                + self.configs["data_name"]
-                + "_MEAN_loss_seed_"
-                + str(self.configs["seed"])
-                + ".csv"
-            )
-
-        xValid_up, yValid_up, xValid_down, yValid_down = self.createUpDownTrainingData()
-
-        #######################################
-        ##### ''' Training for the UP ''' #####
-        #######################################
-        print("--- Start training for UP ---")
-
-        stop_training = False
-        early_stop_wait = 0
-        min_delta = 0
-
-        stopped_baseline = None
-        if stopped_baseline is not None:
-            best_loss = stopped_baseline
-        else:
-            best_loss = np.Inf
-        best_weights = None
-
-        self.trainSteps.train_loss_net_std_up.reset_state()
-        self.trainSteps.valid_loss_net_std_up.reset_state()
-        self.trainSteps.test_loss_net_std_up.reset_state()
-
-        for i in range(self.configs["Max_iter"]):
-            self.trainSteps.train_loss_net_std_up.reset_state()
-            self.trainSteps.valid_loss_net_std_up.reset_state()
-            self.trainSteps.test_loss_net_std_up.reset_state()
-
-            self.trainSteps.train_step_up(
-                self.xTrain_up, self.yTrain_up, xValid_up, yValid_up
-            )
-
-            current_train_loss = self.trainSteps.train_loss_net_std_up.result()
-            current_valid_loss = self.trainSteps.valid_loss_net_std_up.result()
-
-            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
-                print(
-                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                )
-                break
-
-            if i % 100 == 0:
-                print(
-                    "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
-                        i, current_train_loss, current_valid_loss
-                    )
-                )
-
-            self.train_loss_up_list.append(current_train_loss.numpy())
-            self.valid_loss_up_list.append(current_valid_loss.numpy())
-
-            if (
-                self.configs["early_stop"]
-                and i >= self.configs["early_stop_start_iter"]
-            ):
-                if np.less(current_valid_loss - min_delta, best_loss):
-                    best_loss = current_valid_loss
-                    early_stop_wait = 0
-                    if self.configs["restore_best_weights"]:
-                        best_weights = self.trainSteps.net_std_up.get_weights()
-                else:
-                    early_stop_wait += 1
-                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                    if early_stop_wait >= self.configs["wait_patience"]:
-                        stop_training = True
-                        if self.configs["restore_best_weights"]:
-                            if best_weights is not None:
-                                if self.configs["verbose"] > 0:
-                                    print(
-                                        "--- Restoring std_up model weights from the end of the best iteration"
-                                    )
-                                self.trainSteps.net_std_up.set_weights(best_weights)
-                        if self.configs["saveWeights"]:
-                            print(
-                                "--- Saving best model weights to h5 file: {}_best_std_up_iter_{}.h5".format(
-                                    self.configs["data_name"], str(i + 1)
-                                )
-                            )
-                            self.trainSteps.net_std_up.save_weights(
-                                os.getcwd()
-                                + "/Results_PI3NN/checkpoints_up/"
-                                + self.configs["data_name"]
-                                + "_best_std_up_iter_"
-                                + str(i + 1)
-                                + ".h5"
-                            )
-            self.iter_up_list.append(i)
-            if stop_training:
-                print(
-                    "--- Early stopping criteria met.  Iteration: {}, train_loss:{}, valid_loss:{}".format(
-                        i + 1, current_train_loss, current_valid_loss
-                    )
-                )
-                break
-
-            ### Test model saving
-            # if configs['saveWeights']:
-            #     trainSteps.net_std_up.save_weights('./checkpoints_up/up_checkpoint_iter_'+str(i+1)+'.h5')
-
-        if self.configs["plot_loss_history"]:
-            self.plotter.plotTrainValidationLoss(
-                self.train_loss_up_list,
-                self.valid_loss_up_list,  # test_loss=self.test_loss_up_list,
-                trainPlotLabel="training loss",
-                validPlotLabel="valid loss",
-                xlabel="iterations",
-                ylabel="Loss",
-                title="("
-                + self.saveFigPrefix
-                + ")Train/valid (and test) loss for UP values",
-                gridOn=True,
-                legendOn=True,
-                saveFigPath=self.configs["plot_loss_history_path"]
-                + self.saveFigPrefix
-                + "_UP_loss_seed_"
-                + str(self.configs["split_seed"])
-                + "_"
-                + str(self.configs["seed"])
-                + ".png",
-            )
-            # xlim=[50, len(train_loss_up_list)])
-        if self.configs["save_loss_history"]:
-            loss_up_dict = {
-                "iter": self.iter_up_list,
-                "train_loss": self.train_loss_up_list,
-                "valid_loss": self.valid_loss_up_list,
-            }
-
-            df_loss_UP = pd.DataFrame(loss_up_dict)
-            df_loss_UP.to_csv(
-                self.configs["save_loss_history_path"]
-                + self.configs["data_name"]
-                + "_UP_loss_seed_"
-                + str(self.configs["seed"])
-                + ".csv"
-            )
-
-        #######################################
-        ##### ''' Training for the DOWN ''' ###
-        #######################################
-        print("--- Start training for DOWN ---")
-
-        stop_training = False
-        early_stop_wait = 0
-        min_delta = 0
-
-        stopped_baseline = None
-        if stopped_baseline is not None:
-            best_loss = stopped_baseline
-        else:
-            best_loss = np.Inf
-        best_weights = None
-
-        self.trainSteps.train_loss_net_std_down.reset_state()
-        self.trainSteps.valid_loss_net_std_down.reset_state()
-        self.trainSteps.test_loss_net_std_down.reset_state()
-
-        for i in range(self.configs["Max_iter"]):
-            self.trainSteps.train_loss_net_std_down.reset_state()
-            self.trainSteps.valid_loss_net_std_down.reset_state()
-            self.trainSteps.test_loss_net_std_down.reset_state()
-
-            self.trainSteps.train_step_down(
-                self.xTrain_down, self.yTrain_down, xValid_down, yValid_down
-            )
-
-            current_train_loss = self.trainSteps.train_loss_net_std_down.result()
-            current_valid_loss = self.trainSteps.valid_loss_net_std_down.result()
-            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
-                print(
-                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                )
-                break
-
-            if i % 100 == 0:
-                print(
-                    "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
-                        i, current_train_loss, current_valid_loss
-                    )
-                )
-
-            self.train_loss_down_list.append(current_train_loss.numpy())
-            self.valid_loss_down_list.append(current_valid_loss.numpy())
-
-            if (
-                self.configs["early_stop"]
-                and i >= self.configs["early_stop_start_iter"]
-            ):
-                if np.less(current_valid_loss - min_delta, best_loss):
-                    best_loss = current_valid_loss
-                    early_stop_wait = 0
-                    if self.configs["restore_best_weights"]:
-                        best_weights = self.trainSteps.net_std_down.get_weights()
-                else:
-                    early_stop_wait += 1
-                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                    if early_stop_wait >= self.configs["wait_patience"]:
-                        stop_training = True
-                        if self.configs["restore_best_weights"]:
-                            if best_weights is not None:
-                                if self.configs["verbose"] > 0:
-                                    print(
-                                        "--- Restoring std_down model weights from the end of the best iteration"
-                                    )
-                                self.trainSteps.net_std_down.set_weights(best_weights)
-                        if self.configs["saveWeights"]:
-                            print(
-                                "--- Saving best model weights to h5 file: {}_best_std_down_iter_{}.h5".format(
-                                    self.configs["data_name"], str(i + 1)
-                                )
-                            )
-                            self.trainSteps.net_std_down.save_weights(
-                                os.getcwd()
-                                + "/Results_PI3NN/checkpoints_down/"
-                                + self.configs["data_name"]
-                                + "_best_std_down_iter_"
-                                + str(i + 1)
-                                + ".h5"
-                            )
-            self.iter_down_list.append(i)
-            if stop_training:
-                print(
-                    "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                        i + 1, current_train_loss, current_valid_loss
-                    )
-                )
-                break
-
-            ### Test model saving
-            # if configs['saveWeights']:
-            #     trainSteps.net_std_down.save_weights('./checkpoints_down/down_checkpoint_iter_'+str(i+1)+'.h5')
-
-        if self.configs["plot_loss_history"]:
-            self.plotter.plotTrainValidationLoss(
-                self.train_loss_down_list,
-                self.valid_loss_down_list,  # test_loss=self.test_loss_down_list,
-                trainPlotLabel="training loss",
-                validPlotLabel="valid loss",
-                xlabel="iterations",
-                ylabel="Loss",
-                title="("
-                + self.saveFigPrefix
-                + ")Train/valid (and test) loss for DOWN values",
-                gridOn=True,
-                legendOn=True,
-                saveFigPath=self.configs["plot_loss_history_path"]
-                + self.saveFigPrefix
-                + "_DOWN_loss_seed_"
-                + str(self.configs["seed"])
-                + ".png",
-            )
-            # xlim=[50, len(train_loss_down_list)])
-        if self.configs["save_loss_history"]:
-            loss_down_dict = {
-                "iter": self.iter_down_list,
-                "train_loss": self.train_loss_down_list,
-                "valid_loss": self.valid_loss_down_list,
-            }
-
-            df_loss_DOWN = pd.DataFrame(loss_down_dict)
-            df_loss_DOWN.to_csv(
-                self.configs["save_loss_history_path"]
-                + self.configs["data_name"]
-                + "_DOWN_loss_seed_"
-                + str(self.configs["seed"])
-                + ".csv"
-            )
 
     def createUpDownTrainingData(self):
         """Generate up and down training/validation data"""
