@@ -104,12 +104,9 @@ class CL_trainer:
         yValid=None,
         xTest=None,
         yTest=None,
-        testDataEvaluationDuringTrain=False,
     ):
         """Take all 3 network instance and the trainSteps (CL_UQ_Net_train_steps) instance"""
 
-        assert not testDataEvaluationDuringTrain
-        self.testDataEvaluationDuringTrain = testDataEvaluationDuringTrain
         self.bool_NaN = False
         self.configs = configs
         self.net_mean = net_mean
@@ -191,7 +188,6 @@ class CL_trainer:
         print("--- Start training for MEAN ---")
         stop_training = False
         early_stop_wait = 0
-        stopped_iter = 0
         min_delta = 0
 
         stopped_baseline = None
@@ -210,13 +206,7 @@ class CL_trainer:
             self.trainSteps.test_loss_net_mean.reset_state()
 
             self.trainSteps.train_step_mean(
-                self.xTrain,
-                self.yTrain,
-                self.xValid,
-                self.yValid,
-                xTest=None,
-                yTest=None,
-                testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+                self.xTrain, self.yTrain, self.xValid, self.yValid
             )
 
             current_train_loss = self.trainSteps.train_loss_net_mean.result()
@@ -251,7 +241,6 @@ class CL_trainer:
                     early_stop_wait += 1
                     # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
                     if early_stop_wait >= self.configs["wait_patience"]:
-                        stopped_iter = i
                         stop_training = True
                         if self.configs["restore_best_weights"]:
                             if best_weights is not None:
@@ -355,7 +344,6 @@ class CL_trainer:
 
         stop_training = False
         early_stop_wait = 0
-        stopped_iter = 0
         min_delta = 0
 
         stopped_baseline = None
@@ -375,13 +363,7 @@ class CL_trainer:
             self.trainSteps.test_loss_net_std_up.reset_state()
 
             self.trainSteps.train_step_up(
-                self.xTrain_up,
-                self.yTrain_up,
-                self.xValid_up,
-                self.yValid_up,
-                xTest=None,
-                yTest=None,
-                testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+                self.xTrain_up, self.yTrain_up, self.xValid_up, self.yValid_up
             )
 
             current_train_loss = self.trainSteps.train_loss_net_std_up.result()
@@ -416,7 +398,6 @@ class CL_trainer:
                     early_stop_wait += 1
                     # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
                     if early_stop_wait >= self.configs["wait_patience"]:
-                        stopped_iter = i
                         stop_training = True
                         if self.configs["restore_best_weights"]:
                             if best_weights is not None:
@@ -497,7 +478,6 @@ class CL_trainer:
 
         stop_training = False
         early_stop_wait = 0
-        stopped_iter = 0
         min_delta = 0
 
         stopped_baseline = None
@@ -517,13 +497,7 @@ class CL_trainer:
             self.trainSteps.test_loss_net_std_down.reset_state()
 
             self.trainSteps.train_step_down(
-                self.xTrain_down,
-                self.yTrain_down,
-                self.xValid_down,
-                self.yValid_down,
-                xTest=None,
-                yTest=None,
-                testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+                self.xTrain_down, self.yTrain_down, self.xValid_down, self.yValid_down
             )
 
             current_train_loss = self.trainSteps.train_loss_net_std_down.result()
@@ -557,7 +531,6 @@ class CL_trainer:
                     early_stop_wait += 1
                     # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
                     if early_stop_wait >= self.configs["wait_patience"]:
-                        stopped_iter = i
                         stop_training = True
                         if self.configs["restore_best_weights"]:
                             if best_weights is not None:
@@ -1320,16 +1293,7 @@ class CL_UQ_Net_train_steps:
         return loss
 
     @tf.function
-    def train_step_mean(
-        self,
-        xTrain,
-        yTrain,
-        xValid,
-        yValid,
-        xTest=None,
-        yTest=None,
-        testDataEvaluationDuringTrain=False,
-    ):
+    def train_step_mean(self, xTrain, yTrain, xValid, yValid):
         """Training/validation for mean values (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_mean(xTrain, training=True)
@@ -1340,11 +1304,7 @@ class CL_UQ_Net_train_steps:
             valid_predictions = self.net_mean(xValid, training=False)
             valid_loss = self.criterion_mean(yValid, valid_predictions)
 
-            if testDataEvaluationDuringTrain:
-                test_predictions = self.net_mean(xTest, training=False)
-                test_loss = self.criterion_mean(yTest, test_predictions)
-            else:
-                test_loss = 0
+            test_loss = 0
         gradients = tape.gradient(train_loss, self.net_mean.trainable_variables)
         self.optimizer_net_mean.apply_gradients(
             zip(gradients, self.net_mean.trainable_variables)
@@ -1355,58 +1315,11 @@ class CL_UQ_Net_train_steps:
         )  # accumulate the loss and compute the mean until .reset_state()
         self.valid_loss_net_mean(valid_loss)
 
-        if testDataEvaluationDuringTrain:
-            self.test_loss_net_mean(test_loss)
-
         if self.exponential_decay:
             self.global_step_0.assign_add(1)
 
     @tf.function
-    def batch_train_step_mean(self, x_batch_train, y_batch_train):
-        """Training/validation/testing for mean values (batch version)"""
-        with tf.GradientTape() as tape:
-            batch_train_predictions = self.net_mean(x_batch_train, training=True)
-            batch_train_loss = self.criterion_mean(
-                y_batch_train, batch_train_predictions
-            )
-            """ Add regularization losses """
-            batch_train_loss += self.add_model_regularizer_loss(self.net_mean)
-        gradients = tape.gradient(batch_train_loss, self.net_mean.trainable_variables)
-        self.optimizer_net_mean.apply_gradients(
-            zip(gradients, self.net_mean.trainable_variables)
-        )
-        self.train_loss_net_mean(
-            batch_train_loss
-        )  # store and compute the mean of batch training losses, reset in next epoch
-        # print(self.optimizer_net_mean._decayed_lr(tf.float32).numpy())  # print learning rate
-
-    @tf.function
-    def batch_valid_step_mean(self, x_batch_valid, y_batch_valid):
-        with tf.GradientTape() as tape:
-            batch_valid_predictions = self.net_mean(x_batch_valid, training=False)
-            batch_valid_loss = self.criterion_mean(
-                y_batch_valid, batch_valid_predictions
-            )
-        self.valid_loss_net_mean(batch_valid_loss)
-
-    @tf.function
-    def batch_test_step_mean(self, x_batch_test, y_batch_test):
-        with tf.GradientTape() as tape:
-            batch_test_predictions = self.net_mean(x_batch_test, training=False)
-            batch_test_loss = self.criterion_mean(y_batch_test, batch_test_predictions)
-        self.test_loss_net_mean(batch_test_loss)
-
-    @tf.function
-    def train_step_up(
-        self,
-        xTrain,
-        yTrain,
-        xValid,
-        yValid,
-        xTest=None,
-        yTest=None,
-        testDataEvaluationDuringTrain=False,
-    ):
+    def train_step_up(self, xTrain, yTrain, xValid, yValid):
         """Training/validation for upper boundary (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_std_up(xTrain, training=True)
@@ -1417,11 +1330,6 @@ class CL_UQ_Net_train_steps:
             valid_predictions = self.net_std_up(xValid, training=False)
             valid_loss = self.criterion_std(yValid, valid_predictions)
 
-            if testDataEvaluationDuringTrain:
-                test_predictions = self.net_std_up(xTest, training=False)
-                test_loss = self.criterion_std(yTest, test_predictions)
-            else:
-                test_loss = 0
         gradients = tape.gradient(train_loss, self.net_std_up.trainable_variables)
         self.optimizer_net_std_up.apply_gradients(
             zip(gradients, self.net_std_up.trainable_variables)
@@ -1430,57 +1338,11 @@ class CL_UQ_Net_train_steps:
         self.train_loss_net_std_up(train_loss)
         self.valid_loss_net_std_up(valid_loss)
 
-        if testDataEvaluationDuringTrain:
-            self.test_loss_net_std_up(test_loss)
-
         if self.exponential_decay:
             self.global_step_1.assign_add(1)
 
     @tf.function
-    def batch_train_step_up(self, x_batch_train, y_batch_train):
-        """Training/validation/testing for UP values (batch version)"""
-        with tf.GradientTape() as tape:
-            batch_train_predictions = self.net_std_up(x_batch_train, training=True)
-            batch_train_loss = self.criterion_std(
-                y_batch_train, batch_train_predictions
-            )
-            """ Add regularization losses """
-            batch_train_loss += self.add_model_regularizer_loss(self.net_std_up)
-        gradients = tape.gradient(batch_train_loss, self.net_std_up.trainable_variables)
-        self.optimizer_net_std_up.apply_gradients(
-            zip(gradients, self.net_std_up.trainable_variables)
-        )
-        self.train_loss_net_std_up(
-            batch_train_loss
-        )  # store and compute the mean of batch training losses, reset in next epoch
-
-    @tf.function
-    def batch_valid_step_up(self, x_batch_valid, y_batch_valid):
-        with tf.GradientTape() as tape:
-            batch_valid_predictions = self.net_std_up(x_batch_valid, training=False)
-            batch_valid_loss = self.criterion_std(
-                y_batch_valid, batch_valid_predictions
-            )
-        self.valid_loss_net_std_up(batch_valid_loss)
-
-    @tf.function
-    def batch_test_step_up(self, x_batch_test, y_batch_test):
-        with tf.GradientTape() as tape:
-            batch_test_predictions = self.net_std_up(x_batch_test, training=False)
-            batch_test_loss = self.criterion_std(y_batch_test, batch_test_predictions)
-        self.test_loss_net_std_up(batch_test_loss)
-
-    @tf.function
-    def train_step_down(
-        self,
-        xTrain,
-        yTrain,
-        xValid,
-        yValid,
-        xTest=None,
-        yTest=None,
-        testDataEvaluationDuringTrain=False,
-    ):
+    def train_step_down(self, xTrain, yTrain, xValid, yValid):
         """Training/validation for lower boundary (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_std_down(xTrain, training=True)
@@ -1491,11 +1353,6 @@ class CL_UQ_Net_train_steps:
             valid_predictions = self.net_std_down(xValid, training=False)
             valid_loss = self.criterion_std(yValid, valid_predictions)
 
-            if testDataEvaluationDuringTrain:
-                test_predictions = self.net_std_down(xTest, training=False)
-                test_loss = self.criterion_std(yTest, test_predictions)
-            else:
-                test_loss = 0
         gradients = tape.gradient(train_loss, self.net_std_down.trainable_variables)
         self.optimizer_net_std_down.apply_gradients(
             zip(gradients, self.net_std_down.trainable_variables)
@@ -1504,47 +1361,8 @@ class CL_UQ_Net_train_steps:
         self.train_loss_net_std_down(train_loss)
         self.valid_loss_net_std_down(valid_loss)
 
-        if testDataEvaluationDuringTrain:
-            self.test_loss_net_std_down(test_loss)
-
         if self.exponential_decay:
             self.global_step_2.assign_add(1)
-
-    @tf.function
-    def batch_train_step_down(self, x_batch_train, y_batch_train):
-        """Training/validation/testing for DOWN values (batch version)"""
-        with tf.GradientTape() as tape:
-            batch_train_predictions = self.net_std_down(x_batch_train, training=True)
-            batch_train_loss = self.criterion_std(
-                y_batch_train, batch_train_predictions
-            )
-            """ Add regularization losses """
-            batch_train_loss += self.add_model_regularizer_loss(self.net_std_down)
-        gradients = tape.gradient(
-            batch_train_loss, self.net_std_down.trainable_variables
-        )
-        self.optimizer_net_std_down.apply_gradients(
-            zip(gradients, self.net_std_down.trainable_variables)
-        )
-        self.train_loss_net_std_down(
-            batch_train_loss
-        )  # store and compute the mean of batch training losses, reset in next epoch
-
-    @tf.function
-    def batch_valid_step_down(self, x_batch_valid, y_batch_valid):
-        with tf.GradientTape() as tape:
-            batch_valid_predictions = self.net_std_down(x_batch_valid, training=False)
-            batch_valid_loss = self.criterion_std(
-                y_batch_valid, batch_valid_predictions
-            )
-        self.valid_loss_net_std_down(batch_valid_loss)
-
-    @tf.function
-    def batch_test_step_down(self, x_batch_test, y_batch_test):
-        with tf.GradientTape() as tape:
-            batch_test_predictions = self.net_std_down(x_batch_test, training=False)
-            batch_test_loss = self.criterion_std(y_batch_test, batch_test_predictions)
-        self.test_loss_net_std_down(batch_test_loss)
 
 
 class CL_boundary_optimizer:
@@ -1796,10 +1614,6 @@ def main():
     configs["early_stop_start_iter"] = 100  # 60
     configs["wait_patience"] = 300
     configs["restore_best_weights"] = True
-    configs["batch_training"] = False
-    configs["batch_size"] = 256
-    configs["batch_shuffle"] = True
-    configs["batch_shuffle_buffer"] = 1024
     print("--- Dataset: {}".format(configs["data_name"]))
     random.seed(configs["seed"])
     np.random.seed(configs["seed"])
@@ -1822,7 +1636,6 @@ def main():
         yValid=yValid,
         xTest=xTest,
         yTest=yTest,
-        testDataEvaluationDuringTrain=False,
     )
     trainer.train()  # training for 3 networks
     trainer.boundaryOptimization(verbose=1)  # boundary optimization
