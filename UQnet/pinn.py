@@ -107,6 +107,7 @@ class CL_trainer:
     ):
         """Take all 3 network instance and the trainSteps (CL_UQ_Net_train_steps) instance"""
 
+        assert not testDataEvaluationDuringTrain
         self.testDataEvaluationDuringTrain = testDataEvaluationDuringTrain
         self.bool_NaN = False
         self.configs = configs
@@ -180,29 +181,6 @@ class CL_trainer:
                 + "\n"
             )
 
-        if self.configs["batch_training"] == True:
-            #### test tf.data.Dataset for mini-batch training
-            train_dataset = tf.data.Dataset.from_tensor_slices(
-                (self.xTrain, self.yTrain)
-            )
-            valid_dataset = tf.data.Dataset.from_tensor_slices(
-                (self.xValid, self.yValid)
-            )
-            test_dataset = tf.data.Dataset.from_tensor_slices((self.xTest, self.yTest))
-            if self.configs["batch_shuffle"] == True:
-                train_dataset = train_dataset.shuffle(
-                    buffer_size=self.configs["batch_shuffle_buffer"]
-                ).batch(self.configs["batch_size"])
-                valid_dataset = valid_dataset.shuffle(
-                    buffer_size=self.configs["batch_shuffle_buffer"]
-                ).batch(self.configs["batch_size"])
-                test_dataset = test_dataset.shuffle(
-                    buffer_size=self.configs["batch_shuffle_buffer"]
-                ).batch(self.configs["batch_size"])
-            else:
-                train_dataset = train_dataset.batch(self.configs["batch_size"])
-                valid_dataset = valid_dataset.batch(self.configs["batch_size"])
-                test_dataset = test_dataset.batch(self.configs["batch_size"])
 
         """ Main training iterations """
 
@@ -227,241 +205,84 @@ class CL_trainer:
         self.trainSteps.valid_loss_net_mean.reset_state()
         self.trainSteps.test_loss_net_mean.reset_state()
 
-        if self.configs["batch_training"] == False:
-            for i in range(self.configs["Max_iter"]):
-                # self.trainSteps.train_loss_net_mean.reset_state()
-                self.trainSteps.valid_loss_net_mean.reset_state()
-                self.trainSteps.test_loss_net_mean.reset_state()
-                # self.trainSteps.train_step_mean(self.xTrain, self.yTrain, self.xTest, self.yTest, testDataEvaluation=testDataEvaluation)
-                # self.trainSteps.train_step_mean(testDataEvaluation=testDataEvaluation)
-                if self.testDataEvaluationDuringTrain:
-                    self.trainSteps.train_step_mean(
-                        self.xTrain,
-                        self.yTrain,
-                        self.xValid,
-                        self.yValid,
-                        xTest=self.xTest,
-                        yTest=self.yTest,
-                        testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+
+        for i in range(self.configs["Max_iter"]):
+            self.trainSteps.valid_loss_net_mean.reset_state()
+            self.trainSteps.test_loss_net_mean.reset_state()
+
+            self.trainSteps.train_step_mean(
+                self.xTrain,
+                self.yTrain,
+                self.xValid,
+                self.yValid,
+                xTest=None,
+                yTest=None,
+                testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+            )
+
+            current_train_loss = self.trainSteps.train_loss_net_mean.result()
+            current_valid_loss = self.trainSteps.valid_loss_net_mean.result()
+
+            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
+                print(
+                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
+                )
+                break
+
+            if i % 100 == 0:
+                print(
+                    "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
+                        i, current_train_loss, current_valid_loss
                     )
-                if not self.testDataEvaluationDuringTrain:
-                    self.trainSteps.train_step_mean(
-                        self.xTrain,
-                        self.yTrain,
-                        self.xValid,
-                        self.yValid,
-                        xTest=None,
-                        yTest=None,
-                        testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
-                    )
+                )
 
-                current_train_loss = self.trainSteps.train_loss_net_mean.result()
-                current_valid_loss = self.trainSteps.valid_loss_net_mean.result()
+            self.train_loss_mean_list.append(current_train_loss.numpy())
+            self.valid_loss_mean_list.append(current_valid_loss.numpy())
 
-                if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
-                    print(
-                        "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                    )
-                    break
-
-                if self.testDataEvaluationDuringTrain:
-                    current_test_loss = self.trainSteps.test_loss_net_mean.result()
-                    self.test_loss_mean_list.append(current_test_loss.numpy())
-                    if i % 100 == 0:
-                        print(
-                            "Epoch: {}, train_mean loss: {}, valid_mean loss: {}, test_mean_loss: {}".format(
-                                i,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
-                if not self.testDataEvaluationDuringTrain:
-                    if i % 100 == 0:
-                        print(
-                            "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
-                                i, current_train_loss, current_valid_loss
-                            )
-                        )
-
-                self.train_loss_mean_list.append(current_train_loss.numpy())
-                self.valid_loss_mean_list.append(current_valid_loss.numpy())
-
-                if (
-                    self.configs["early_stop"]
-                    and i >= self.configs["early_stop_start_iter"]
-                ):
-                    if np.less(current_valid_loss - min_delta, best_loss):
-                        best_loss = current_valid_loss
-                        early_stop_wait = 0
-                        if self.configs["restore_best_weights"]:
-                            best_weights = self.trainSteps.net_mean.get_weights()
-                    else:
-                        early_stop_wait += 1
-                        # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                        if early_stop_wait >= self.configs["wait_patience"]:
-                            stopped_iter = i
-                            stop_training = True
-                            if self.configs["restore_best_weights"]:
-                                if best_weights is not None:
-                                    if self.configs["verbose"] > 0:
-                                        print(
-                                            "--- Restoring mean model weights from the end of the best iteration"
-                                        )
-                                    self.trainSteps.net_mean.set_weights(best_weights)
-                            if self.configs["saveWeights"]:
-                                print(
-                                    "--- Saving best model weights to h5 file: {}_best_mean_iter_{}.h5".format(
-                                        self.configs["data_name"], str(i + 1)
-                                    )
-                                )
-                                self.trainSteps.net_mean.save_weights(
-                                    os.getcwd()
-                                    + "/Results_PI3NN/checkpoints_mean/"
-                                    + self.configs["data_name"]
-                                    + "_best_mean_iter_"
-                                    + str(i + 1)
-                                    + ".h5"
-                                )
-                self.iter_mean_list.append(i)
-                if stop_training:
-                    if self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}, test_loss:{}".format(
-                                i + 1,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
-                        break
-                    if not self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                                i + 1, current_train_loss, current_valid_loss
-                            )
-                        )
-                        break
-
-        if self.configs["batch_training"] == True:
-            bool_found_NaN = False
-            for i in range(self.configs["Max_iter"]):
-                if bool_found_NaN:
-                    print(
-                        "--- Stop or go to next sets of tuning parameters due to NaN(s)"
-                    )
-                    break
-                self.trainSteps.train_loss_net_mean.reset_state()  ### mean loss of all steps in one epoch
-                self.trainSteps.valid_loss_net_mean.reset_state()
-                self.trainSteps.test_loss_net_mean.reset_state()
-
-                for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
-                    self.trainSteps.batch_train_step_mean(x_batch_train, y_batch_train)
-                    current_train_loss = self.trainSteps.train_loss_net_mean.result()
-
-                    if math.isnan(current_train_loss):
-                        print(
-                            "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                        )
-                        bool_found_NaN = True
-                        break
-                    if (step % 100 == 0) and self.configs[
-                        "verbose"
-                    ] > 1:  # if i % 100 == 0:
-                        print(
-                            "Step: {}, train_mean loss: {}".format(
-                                step, current_train_loss
-                            )
-                        )
-                self.train_loss_mean_list.append(current_train_loss.numpy())
-                ### lr decay
-                if self.configs["exponential_decay"]:
-                    self.trainSteps.global_step_0.assign_add(1)
-
-                #### Validation loop at the end of each epoch
-                for x_batch_valid, y_batch_valid in valid_dataset:
-                    self.trainSteps.batch_valid_step_mean(x_batch_valid, y_batch_valid)
-                    current_valid_loss = self.trainSteps.valid_loss_net_mean.result()
-                self.valid_loss_mean_list.append(current_valid_loss.numpy())
-
-                ### (optional) evaluate testing data
-                if self.testDataEvaluationDuringTrain:
-                    for x_batch_test, y_batch_test in test_dataset:
-                        self.trainSteps.batch_test_step_mean(x_batch_test, y_batch_test)
-                        current_test_loss = self.trainSteps.test_loss_net_mean.result()
-                    self.test_loss_mean_list.append(current_test_loss.numpy())
-                    if i % 100 == 0:
-                        print(
-                            "--- Epoch: {}, train loss: {}, validation loss: {}, test loss: {}".format(
-                                i,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
+            if (
+                self.configs["early_stop"]
+                and i >= self.configs["early_stop_start_iter"]
+            ):
+                if np.less(current_valid_loss - min_delta, best_loss):
+                    best_loss = current_valid_loss
+                    early_stop_wait = 0
+                    if self.configs["restore_best_weights"]:
+                        best_weights = self.trainSteps.net_mean.get_weights()
                 else:
-                    if i % 100 == 0:
-                        print(
-                            "--- Epoch: {}, train loss: {}, validation loss: {}".format(
-                                i, current_train_loss, current_valid_loss
-                            )
-                        )
-
-                if (
-                    self.configs["early_stop"]
-                    and i >= self.configs["early_stop_start_iter"]
-                ):
-                    if np.less(current_valid_loss - min_delta, best_loss):
-                        best_loss = current_valid_loss
-                        early_stop_wait = 0
+                    early_stop_wait += 1
+                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
+                    if early_stop_wait >= self.configs["wait_patience"]:
+                        stopped_iter = i
+                        stop_training = True
                         if self.configs["restore_best_weights"]:
-                            best_weights = self.trainSteps.net_mean.get_weights()
-                    else:
-                        early_stop_wait += 1
-                        # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                        if early_stop_wait >= self.configs["wait_patience"]:
-                            stopped_iter = i
-                            stop_training = True
-                            if self.configs["restore_best_weights"]:
-                                if best_weights is not None:
-                                    if self.configs["verbose"] > 0:
-                                        print(
-                                            "--- Restoring mean model weights from the end of the best iteration"
-                                        )
-                                    self.trainSteps.net_mean.set_weights(best_weights)
-                            if self.configs["saveWeights"]:
-                                print(
-                                    "--- Saving best model weights to h5 file: {}_best_mean_iter_{}.h5".format(
-                                        self.configs["data_name"], str(i + 1)
+                            if best_weights is not None:
+                                if self.configs["verbose"] > 0:
+                                    print(
+                                        "--- Restoring mean model weights from the end of the best iteration"
                                     )
+                                self.trainSteps.net_mean.set_weights(best_weights)
+                        if self.configs["saveWeights"]:
+                            print(
+                                "--- Saving best model weights to h5 file: {}_best_mean_iter_{}.h5".format(
+                                    self.configs["data_name"], str(i + 1)
                                 )
-                                self.trainSteps.net_mean.save_weights(
-                                    os.getcwd()
-                                    + "/Results_PI3NN/checkpoints_mean/"
-                                    + self.configs["data_name"]
-                                    + "_best_mean_iter_"
-                                    + str(i + 1)
-                                    + ".h5"
-                                )
-                self.iter_mean_list.append(i)
-                if stop_training:
-                    if self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}, test_loss:{}".format(
-                                i + 1,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
                             )
-                        )
-                        break
-                    if not self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                                i + 1, current_train_loss, current_valid_loss
+                            self.trainSteps.net_mean.save_weights(
+                                os.getcwd()
+                                + "/Results_PI3NN/checkpoints_mean/"
+                                + self.configs["data_name"]
+                                + "_best_mean_iter_"
+                                + str(i + 1)
+                                + ".h5"
                             )
-                        )
-                        break
+            self.iter_mean_list.append(i)
+            if stop_training:
+                print(
+                    "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
+                        i + 1, current_train_loss, current_valid_loss
+                    )
+                )
+                break
 
         if self.configs["plot_loss_history"]:
             self.plotter.plotTrainValidationLoss(
@@ -491,8 +312,6 @@ class CL_trainer:
                 "train_loss": self.train_loss_mean_list,
                 "valid_loss": self.valid_loss_mean_list,
             }
-            if self.testDataEvaluationDuringTrain:
-                loss_mean_dict["test_loss"] = self.test_loss_mean_list
 
             df_loss_MEAN = pd.DataFrame(loss_mean_dict)
             df_loss_MEAN.to_csv(
@@ -530,19 +349,6 @@ class CL_trainer:
         self.xValid_down = xValid_down_data
         self.yValid_down = yValid_down_data.numpy()
 
-        if self.testDataEvaluationDuringTrain:
-            diff_test = self.yTest.reshape(
-                self.yTest.shape[0], -1
-            ) - self.trainSteps.net_mean(self.xTest, training=False)
-            yTest_up_data = tf.expand_dims(diff_test[diff_test > 0], axis=1)
-            xTest_up_data = self.xTest[(diff_test > 0).numpy().flatten(), :]
-            yTest_down_data = -1.0 * tf.expand_dims(diff_test[diff_test < 0], axis=1)
-            xTest_down_data = self.xTest[(diff_test < 0).numpy().flatten(), :]
-
-            self.xTest_up = xTest_up_data
-            self.yTest_up = yTest_up_data.numpy()
-            self.xTest_down = xTest_down_data
-            self.yTest_down = yTest_down_data.numpy()
 
         #######################################
         ##### ''' Training for the UP ''' #####
@@ -565,250 +371,89 @@ class CL_trainer:
         self.trainSteps.valid_loss_net_std_up.reset_state()
         self.trainSteps.test_loss_net_std_up.reset_state()
 
-        if self.configs["batch_training"] == False:
-            for i in range(self.configs["Max_iter"]):
-                self.trainSteps.train_loss_net_std_up.reset_state()
-                self.trainSteps.valid_loss_net_std_up.reset_state()
-                self.trainSteps.test_loss_net_std_up.reset_state()
+        for i in range(self.configs["Max_iter"]):
+            self.trainSteps.train_loss_net_std_up.reset_state()
+            self.trainSteps.valid_loss_net_std_up.reset_state()
+            self.trainSteps.test_loss_net_std_up.reset_state()
 
-                if self.testDataEvaluationDuringTrain:
-                    self.trainSteps.train_step_up(
-                        self.xTrain_up,
-                        self.yTrain_up,
-                        self.xValid_up,
-                        self.yValid_up,
-                        xTest=self.xTest_up,
-                        yTest=self.yTest_up,
-                        testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+            self.trainSteps.train_step_up(
+                self.xTrain_up,
+                self.yTrain_up,
+                self.xValid_up,
+                self.yValid_up,
+                xTest=None,
+                yTest=None,
+                testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+            )
+
+            current_train_loss = self.trainSteps.train_loss_net_std_up.result()
+            current_valid_loss = self.trainSteps.valid_loss_net_std_up.result()
+
+            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
+                print(
+                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
+                )
+                break
+
+
+            if i % 100 == 0:
+                print(
+                    "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
+                        i, current_train_loss, current_valid_loss
                     )
-                if not self.testDataEvaluationDuringTrain:
-                    self.trainSteps.train_step_up(
-                        self.xTrain_up,
-                        self.yTrain_up,
-                        self.xValid_up,
-                        self.yValid_up,
-                        xTest=None,
-                        yTest=None,
-                        testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
-                    )
+                )
 
-                current_train_loss = self.trainSteps.train_loss_net_std_up.result()
-                current_valid_loss = self.trainSteps.valid_loss_net_std_up.result()
+            self.train_loss_up_list.append(current_train_loss.numpy())
+            self.valid_loss_up_list.append(current_valid_loss.numpy())
 
-                if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
-                    print(
-                        "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                    )
-                    break
-
-                if self.testDataEvaluationDuringTrain:
-                    current_test_loss = self.trainSteps.test_loss_net_std_up.result()
-                    self.test_loss_up_list.append(current_test_loss.numpy())
-                    if i % 100 == 0:
-                        print(
-                            "Epoch: {}, train_mean loss: {}, valid_mean loss: {}, test_mean_loss: {}".format(
-                                i,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
-                if not self.testDataEvaluationDuringTrain:
-                    if i % 100 == 0:
-                        print(
-                            "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
-                                i, current_train_loss, current_valid_loss
-                            )
-                        )
-
-                self.train_loss_up_list.append(current_train_loss.numpy())
-                self.valid_loss_up_list.append(current_valid_loss.numpy())
-
-                if (
-                    self.configs["early_stop"]
-                    and i >= self.configs["early_stop_start_iter"]
-                ):
-                    if np.less(current_valid_loss - min_delta, best_loss):
-                        best_loss = current_valid_loss
-                        early_stop_wait = 0
-                        if self.configs["restore_best_weights"]:
-                            best_weights = self.trainSteps.net_std_up.get_weights()
-                    else:
-                        early_stop_wait += 1
-                        # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                        if early_stop_wait >= self.configs["wait_patience"]:
-                            stopped_iter = i
-                            stop_training = True
-                            if self.configs["restore_best_weights"]:
-                                if best_weights is not None:
-                                    if self.configs["verbose"] > 0:
-                                        print(
-                                            "--- Restoring std_up model weights from the end of the best iteration"
-                                        )
-                                    self.trainSteps.net_std_up.set_weights(best_weights)
-                            if self.configs["saveWeights"]:
-                                print(
-                                    "--- Saving best model weights to h5 file: {}_best_std_up_iter_{}.h5".format(
-                                        self.configs["data_name"], str(i + 1)
-                                    )
-                                )
-                                self.trainSteps.net_std_up.save_weights(
-                                    os.getcwd()
-                                    + "/Results_PI3NN/checkpoints_up/"
-                                    + self.configs["data_name"]
-                                    + "_best_std_up_iter_"
-                                    + str(i + 1)
-                                    + ".h5"
-                                )
-                self.iter_up_list.append(i)
-                if stop_training:
-                    if self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Iteration: {}, train_loss:{}, valid_loss:{}, test_loss:{}".format(
-                                i + 1,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
-                        break
-                    if not self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Iteration: {}, train_loss:{}, valid_loss:{}".format(
-                                i + 1, current_train_loss, current_valid_loss
-                            )
-                        )
-                        break
-
-                ### Test model saving
-                # if configs['saveWeights']:
-                #     trainSteps.net_std_up.save_weights('./checkpoints_up/up_checkpoint_iter_'+str(i+1)+'.h5')
-
-        if self.configs["batch_training"] == True:
-            bool_found_NaN = False
-            for i in range(self.configs["Max_iter"]):
-                if bool_found_NaN:
-                    print(
-                        "--- Stop or go to next sets of tuning parameters due to NaN(s)"
-                    )
-                    break
-                self.trainSteps.train_loss_net_std_up.reset_state()  ### mean loss of all steps in one epoch
-                self.trainSteps.valid_loss_net_std_up.reset_state()
-                self.trainSteps.test_loss_net_std_up.reset_state()
-
-                for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
-                    self.trainSteps.batch_train_step_up(x_batch_train, y_batch_train)
-                    current_train_loss = self.trainSteps.train_loss_net_std_up.result()
-
-                    if math.isnan(current_train_loss):
-                        print(
-                            "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                        )
-                        bool_found_NaN = True
-                        break
-                    if (step % 100 == 0) and self.configs[
-                        "verbose"
-                    ] > 1:  # if i % 100 == 0:
-                        print(
-                            "Step: {}, train_mean loss: {}".format(
-                                step, current_train_loss
-                            )
-                        )
-
-                self.train_loss_up_list.append(current_train_loss.numpy())
-                ### lr decay
-                if self.configs["exponential_decay"]:
-                    self.trainSteps.global_step_1.assign_add(1)
-
-                #### Validation loop at the end of each epoch
-                for x_batch_valid, y_batch_valid in valid_dataset:
-                    self.trainSteps.batch_valid_step_up(x_batch_valid, y_batch_valid)
-                    current_valid_loss = self.trainSteps.valid_loss_net_std_up.result()
-                self.valid_loss_up_list.append(current_valid_loss.numpy())
-
-                ### (optional) evaluate testing data
-                if self.testDataEvaluationDuringTrain:
-                    for x_batch_test, y_batch_test in test_dataset:
-                        self.trainSteps.batch_test_step_up(x_batch_test, y_batch_test)
-                        current_test_loss = (
-                            self.trainSteps.test_loss_net_std_up.result()
-                        )
-                    self.test_loss_up_list.append(current_test_loss.numpy())
-                    if i % 100 == 0:
-                        print(
-                            "--- Epoch: {}, train loss: {}, validation loss: {}, test loss: {}".format(
-                                i,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
+            if (
+                self.configs["early_stop"]
+                and i >= self.configs["early_stop_start_iter"]
+            ):
+                if np.less(current_valid_loss - min_delta, best_loss):
+                    best_loss = current_valid_loss
+                    early_stop_wait = 0
+                    if self.configs["restore_best_weights"]:
+                        best_weights = self.trainSteps.net_std_up.get_weights()
                 else:
-                    if i % 100 == 0:
-                        print(
-                            "--- Epoch: {}, train loss: {}, validation loss: {}".format(
-                                i, current_train_loss, current_valid_loss
-                            )
-                        )
-
-                    if (
-                        self.configs["early_stop"]
-                        and i >= self.configs["early_stop_start_iter"]
-                    ):
-                        if np.less(current_valid_loss - min_delta, best_loss):
-                            best_loss = current_train_loss
-                            early_stop_wait = 0
-                            if self.configs["restore_best_weights"]:
-                                best_weights = self.trainSteps.net_std_up.get_weights()
-                        else:
-                            early_stop_wait += 1
-                            # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                            if early_stop_wait >= self.configs["wait_patience"]:
-                                stopped_iter = i
-                                stop_training = True
-                                if self.configs["restore_best_weights"]:
-                                    if best_weights is not None:
-                                        if self.configs["verbose"] > 0:
-                                            print(
-                                                "--- Restoring std_up model weights from the end of the best iteration"
-                                            )
-                                        self.trainSteps.net_std_up.set_weights(
-                                            best_weights
-                                        )
-                                if self.configs["saveWeights"]:
+                    early_stop_wait += 1
+                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
+                    if early_stop_wait >= self.configs["wait_patience"]:
+                        stopped_iter = i
+                        stop_training = True
+                        if self.configs["restore_best_weights"]:
+                            if best_weights is not None:
+                                if self.configs["verbose"] > 0:
                                     print(
-                                        "--- Saving best model weights to h5 file: {}_best_std_up_iter_{}.h5".format(
-                                            self.configs["data_name"], str(i + 1)
-                                        )
+                                        "--- Restoring std_up model weights from the end of the best iteration"
                                     )
-                                    self.trainSteps.net_std_up.save_weights(
-                                        os.getcwd()
-                                        + "/Results_PI3NN/checkpoints_up/"
-                                        + self.configs["data_name"]
-                                        + "_best_std_up_iter_"
-                                        + str(i + 1)
-                                        + ".h5"
-                                    )
+                                self.trainSteps.net_std_up.set_weights(best_weights)
+                        if self.configs["saveWeights"]:
+                            print(
+                                "--- Saving best model weights to h5 file: {}_best_std_up_iter_{}.h5".format(
+                                    self.configs["data_name"], str(i + 1)
+                                )
+                            )
+                            self.trainSteps.net_std_up.save_weights(
+                                os.getcwd()
+                                + "/Results_PI3NN/checkpoints_up/"
+                                + self.configs["data_name"]
+                                + "_best_std_up_iter_"
+                                + str(i + 1)
+                                + ".h5"
+                            )
+            self.iter_up_list.append(i)
+            if stop_training:
+                print(
+                    "--- Early stopping criteria met.  Iteration: {}, train_loss:{}, valid_loss:{}".format(
+                        i + 1, current_train_loss, current_valid_loss
+                    )
+                )
+                break
 
-                    self.iter_up_list.append(i)
-                    if stop_training:
-                        if self.testDataEvaluationDuringTrain:
-                            print(
-                                "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}, test_loss:{}".format(
-                                    i + 1,
-                                    current_train_loss,
-                                    current_valid_loss,
-                                    current_test_loss,
-                                )
-                            )
-                            break
-                        if not self.testDataEvaluationDuringTrain:
-                            print(
-                                "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                                    i + 1, current_train_loss, current_valid_loss
-                                )
-                            )
-                            break
+            ### Test model saving
+            # if configs['saveWeights']:
+            #     trainSteps.net_std_up.save_weights('./checkpoints_up/up_checkpoint_iter_'+str(i+1)+'.h5')
 
         if self.configs["plot_loss_history"]:
             self.plotter.plotTrainValidationLoss(
@@ -838,8 +483,6 @@ class CL_trainer:
                 "train_loss": self.train_loss_up_list,
                 "valid_loss": self.valid_loss_up_list,
             }
-            if self.testDataEvaluationDuringTrain:
-                loss_up_dict["test_loss"] = self.test_loss_up_list
 
             df_loss_UP = pd.DataFrame(loss_up_dict)
             df_loss_UP.to_csv(
@@ -871,260 +514,89 @@ class CL_trainer:
         self.trainSteps.valid_loss_net_std_down.reset_state()
         self.trainSteps.test_loss_net_std_down.reset_state()
 
-        if self.configs["batch_training"] == False:
-            for i in range(self.configs["Max_iter"]):
-                self.trainSteps.train_loss_net_std_down.reset_state()
-                self.trainSteps.valid_loss_net_std_down.reset_state()
-                self.trainSteps.test_loss_net_std_down.reset_state()
+        for i in range(self.configs["Max_iter"]):
+            self.trainSteps.train_loss_net_std_down.reset_state()
+            self.trainSteps.valid_loss_net_std_down.reset_state()
+            self.trainSteps.test_loss_net_std_down.reset_state()
 
-                if self.testDataEvaluationDuringTrain:
-                    self.trainSteps.train_step_down(
-                        self.xTrain_down,
-                        self.yTrain_down,
-                        self.xValid_down,
-                        self.yValid_down,
-                        xTest=self.xTest_down,
-                        yTest=self.yTest_down,
-                        testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+            self.trainSteps.train_step_down(
+                self.xTrain_down,
+                self.yTrain_down,
+                self.xValid_down,
+                self.yValid_down,
+                xTest=None,
+                yTest=None,
+                testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
+            )
+
+            current_train_loss = self.trainSteps.train_loss_net_std_down.result()
+            current_valid_loss = self.trainSteps.valid_loss_net_std_down.result()
+            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
+                print(
+                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
+                )
+                break
+
+            if i % 100 == 0:
+                print(
+                    "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
+                        i, current_train_loss, current_valid_loss
                     )
-                if not self.testDataEvaluationDuringTrain:
-                    self.trainSteps.train_step_down(
-                        self.xTrain_down,
-                        self.yTrain_down,
-                        self.xValid_down,
-                        self.yValid_down,
-                        xTest=None,
-                        yTest=None,
-                        testDataEvaluationDuringTrain=self.testDataEvaluationDuringTrain,
-                    )
+                )
 
-                current_train_loss = self.trainSteps.train_loss_net_std_down.result()
-                current_valid_loss = self.trainSteps.valid_loss_net_std_down.result()
-                if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
-                    print(
-                        "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                    )
-                    break
+            self.train_loss_down_list.append(current_train_loss.numpy())
+            self.valid_loss_down_list.append(current_valid_loss.numpy())
 
-                if self.testDataEvaluationDuringTrain:
-                    current_test_loss = self.trainSteps.test_loss_net_std_down.result()
-                    self.test_loss_down_list.append(current_test_loss.numpy())
-                    if i % 100 == 0:
-                        print(
-                            "Epoch: {}, train_mean loss: {}, valid_mean loss: {}, test_mean_loss: {}".format(
-                                i,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
-                if not self.testDataEvaluationDuringTrain:
-                    if i % 100 == 0:
-                        print(
-                            "Epoch: {}, train_mean loss: {}, valid_mean loss: {}".format(
-                                i, current_train_loss, current_valid_loss
-                            )
-                        )
-
-                self.train_loss_down_list.append(current_train_loss.numpy())
-                self.valid_loss_down_list.append(current_valid_loss.numpy())
-
-                if (
-                    self.configs["early_stop"]
-                    and i >= self.configs["early_stop_start_iter"]
-                ):
-                    if np.less(current_valid_loss - min_delta, best_loss):
-                        best_loss = current_valid_loss
-                        early_stop_wait = 0
-                        if self.configs["restore_best_weights"]:
-                            best_weights = self.trainSteps.net_std_down.get_weights()
-                    else:
-                        early_stop_wait += 1
-                        # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                        if early_stop_wait >= self.configs["wait_patience"]:
-                            stopped_iter = i
-                            stop_training = True
-                            if self.configs["restore_best_weights"]:
-                                if best_weights is not None:
-                                    if self.configs["verbose"] > 0:
-                                        print(
-                                            "--- Restoring std_down model weights from the end of the best iteration"
-                                        )
-                                    self.trainSteps.net_std_down.set_weights(
-                                        best_weights
-                                    )
-                            if self.configs["saveWeights"]:
-                                print(
-                                    "--- Saving best model weights to h5 file: {}_best_std_down_iter_{}.h5".format(
-                                        self.configs["data_name"], str(i + 1)
-                                    )
-                                )
-                                self.trainSteps.net_std_down.save_weights(
-                                    os.getcwd()
-                                    + "/Results_PI3NN/checkpoints_down/"
-                                    + self.configs["data_name"]
-                                    + "_best_std_down_iter_"
-                                    + str(i + 1)
-                                    + ".h5"
-                                )
-                self.iter_down_list.append(i)
-                if stop_training:
-                    if self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}, test_loss:{}".format(
-                                i + 1,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
-                        break
-                    if not self.testDataEvaluationDuringTrain:
-                        print(
-                            "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                                i + 1, current_train_loss, current_valid_loss
-                            )
-                        )
-                        break
-
-                ### Test model saving
-                # if configs['saveWeights']:
-                #     trainSteps.net_std_down.save_weights('./checkpoints_down/down_checkpoint_iter_'+str(i+1)+'.h5')
-
-        if self.configs["batch_training"] == True:
-            bool_found_NaN = False
-            for i in range(self.configs["Max_iter"]):
-                if bool_found_NaN:
-                    print(
-                        "--- Stop or go to next sets of tuning parameters due to NaN(s)"
-                    )
-                    break
-                self.trainSteps.train_loss_net_std_down.reset_state()  ### mean loss of all steps in one epoch
-                self.trainSteps.valid_loss_net_std_down.reset_state()
-                self.trainSteps.test_loss_net_std_down.reset_state()
-
-                for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
-                    self.trainSteps.batch_train_step_down(x_batch_train, y_batch_train)
-                    current_train_loss = (
-                        self.trainSteps.train_loss_net_std_down.result()
-                    )
-
-                    if math.isnan(current_train_loss):
-                        print(
-                            "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                        )
-                        bool_found_NaN = True
-                        break
-                    if (step % 100 == 0) and self.configs[
-                        "verbose"
-                    ] > 1:  # if i % 100 == 0:
-                        print(
-                            "Step: {}, train_mean loss: {}".format(
-                                step, current_train_loss
-                            )
-                        )
-
-                self.train_loss_down_list.append(current_train_loss.numpy())
-                ### lr decay
-                if self.configs["exponential_decay"]:
-                    self.trainSteps.global_step_2.assign_add(1)
-
-                #### Validation loop at the end of each epoch
-                for x_batch_valid, y_batch_valid in valid_dataset:
-                    self.trainSteps.batch_valid_step_down(x_batch_valid, y_batch_valid)
-                    current_valid_loss = (
-                        self.trainSteps.valid_loss_net_std_down.result()
-                    )
-                self.valid_loss_down_list.append(current_valid_loss.numpy())
-
-                ### (optional) evaluate testing data
-                if self.testDataEvaluationDuringTrain:
-                    for x_batch_test, y_batch_test in test_dataset:
-                        self.trainSteps.batch_test_step_down(x_batch_test, y_batch_test)
-                        current_test_loss = (
-                            self.trainSteps.test_loss_net_std_down.result()
-                        )
-                    self.test_loss_down_list.append(current_test_loss.numpy())
-                    if i % 100 == 0:
-                        print(
-                            "--- Epoch: {}, train loss: {}, validation loss: {}, test loss: {}".format(
-                                i,
-                                current_train_loss,
-                                current_valid_loss,
-                                current_test_loss,
-                            )
-                        )
+            if (
+                self.configs["early_stop"]
+                and i >= self.configs["early_stop_start_iter"]
+            ):
+                if np.less(current_valid_loss - min_delta, best_loss):
+                    best_loss = current_valid_loss
+                    early_stop_wait = 0
+                    if self.configs["restore_best_weights"]:
+                        best_weights = self.trainSteps.net_std_down.get_weights()
                 else:
-                    if i % 100 == 0:
-                        print(
-                            "--- Epoch: {}, train loss: {}, validation loss: {}".format(
-                                i, current_train_loss, current_valid_loss
-                            )
-                        )
-
-                    if (
-                        self.configs["early_stop"]
-                        and i >= self.configs["early_stop_start_iter"]
-                    ):
-                        if np.less(current_valid_loss - min_delta, best_loss):
-                            best_loss = current_train_loss
-                            early_stop_wait = 0
-                            if self.configs["restore_best_weights"]:
-                                best_weights = (
-                                    self.trainSteps.net_std_down.get_weights()
-                                )
-                        else:
-                            early_stop_wait += 1
-                            # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                            if early_stop_wait >= self.configs["wait_patience"]:
-                                stopped_iter = i
-                                stop_training = True
-                                if self.configs["restore_best_weights"]:
-                                    if best_weights is not None:
-                                        if self.configs["verbose"] > 0:
-                                            print(
-                                                "--- Restoring std_down model weights from the end of the best iteration"
-                                            )
-                                        self.trainSteps.net_std_down.set_weights(
-                                            best_weights
-                                        )
-                                if self.configs["saveWeights"]:
+                    early_stop_wait += 1
+                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
+                    if early_stop_wait >= self.configs["wait_patience"]:
+                        stopped_iter = i
+                        stop_training = True
+                        if self.configs["restore_best_weights"]:
+                            if best_weights is not None:
+                                if self.configs["verbose"] > 0:
                                     print(
-                                        "--- Saving best model weights to h5 file: {}_best_std_down_iter_{}.h5".format(
-                                            self.configs["data_name"], str(i + 1)
-                                        )
+                                        "--- Restoring std_down model weights from the end of the best iteration"
                                     )
-                                    self.trainSteps.net_std_down.save_weights(
-                                        os.getcwd()
-                                        + "/Results_PI3NN/checkpoints_down/"
-                                        + self.configs["data_name"]
-                                        + "_best_std_down_iter_"
-                                        + str(i + 1)
-                                        + ".h5"
-                                    )
+                                self.trainSteps.net_std_down.set_weights(
+                                    best_weights
+                                )
+                        if self.configs["saveWeights"]:
+                            print(
+                                "--- Saving best model weights to h5 file: {}_best_std_down_iter_{}.h5".format(
+                                    self.configs["data_name"], str(i + 1)
+                                )
+                            )
+                            self.trainSteps.net_std_down.save_weights(
+                                os.getcwd()
+                                + "/Results_PI3NN/checkpoints_down/"
+                                + self.configs["data_name"]
+                                + "_best_std_down_iter_"
+                                + str(i + 1)
+                                + ".h5"
+                            )
+            self.iter_down_list.append(i)
+            if stop_training:
+                print(
+                    "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
+                        i + 1, current_train_loss, current_valid_loss
+                    )
+                )
+                break
 
-                    self.iter_down_list.append(i)
-                    if stop_training:
-                        if self.testDataEvaluationDuringTrain:
-                            print(
-                                "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}, test_loss:{}".format(
-                                    i + 1,
-                                    current_train_loss,
-                                    current_valid_loss,
-                                    current_test_loss,
-                                )
-                            )
-                            break
-                        if not self.testDataEvaluationDuringTrain:
-                            print(
-                                "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                                    i + 1, current_train_loss, current_valid_loss
-                                )
-                            )
-                            break
-                    ### Test model saving
-                    # if configs['saveWeights']:
-                    #     trainSteps.net_std_down.save_weights('./checkpoints_down/down_checkpoint_iter_'+str(i+1)+'.h5')
+            ### Test model saving
+            # if configs['saveWeights']:
+            #     trainSteps.net_std_down.save_weights('./checkpoints_down/down_checkpoint_iter_'+str(i+1)+'.h5')
 
         if self.configs["plot_loss_history"]:
             self.plotter.plotTrainValidationLoss(
@@ -1152,8 +624,6 @@ class CL_trainer:
                 "train_loss": self.train_loss_down_list,
                 "valid_loss": self.valid_loss_down_list,
             }
-            if self.testDataEvaluationDuringTrain:
-                loss_down_dict["test_loss"] = self.test_loss_down_list
 
             df_loss_DOWN = pd.DataFrame(loss_down_dict)
             df_loss_DOWN.to_csv(
