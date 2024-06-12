@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 import random
+from typing import Literal
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -107,38 +108,28 @@ class CL_trainer:
     ):
         """Take all 3 network instance and the trainSteps (CL_UQ_Net_train_steps) instance"""
 
-        self.bool_NaN = False
         self.configs = configs
         self.net_mean = net_mean
         self.net_std_up = net_std_up
         self.net_std_down = net_std_down
+
         self.xTrain = xTrain
         self.yTrain = yTrain
-
-        if xValid is not None:
-            self.xValid = xValid
-        if yValid is not None:
-            self.yValid = yValid
-
-        if xTest is not None:
-            self.xTest = xTest
-        if yTest is not None:
-            self.yTest = yTest
+        self.xValid = xValid
+        self.yValid = yValid
+        self.xTest = xTest
+        self.yTest = yTest
 
         self.trainSteps = CL_UQ_Net_train_steps(
             self.net_mean,
             self.net_std_up,
             self.net_std_down,
-            # self.xTrain, self.yTrain, self.xTest, self.yTest,
             optimizers=self.configs["optimizers"],  ## 'Adam', 'SGD'
             lr=self.configs["lr"],  ## order: mean, up, down
             exponential_decay=self.configs["exponential_decay"],
             decay_steps=self.configs["decay_steps"],
             decay_rate=self.configs["decay_rate"],
         )
-
-        # self.early_stop_start_iter = configs['early_stop_start_iter']
-        # self.verbose = 1
 
         self.plotter = CL_plotter()
 
@@ -158,6 +149,147 @@ class CL_trainer:
         self.iter_down_list = []
 
         self.saveFigPrefix = self.configs["data_name"]  # prefix for the saved plots
+
+    def main_train_step(
+        self,
+        network_type: Literal["mean", "up", "down"],
+        network,
+        train_step_fun,
+        train_loss,
+        valid_loss,
+        test_loss,
+        x_train,
+        y_train,
+        x_valid,
+        y_valid,
+        iterations: list,
+        train_losses: list,
+        valid_losses: list,
+        max_iter: int,
+    ):
+        """Training for the different networks"""
+
+        print(f"--- Start training for {network_type} ---")
+        stop_training = False
+        early_stop_wait = 0
+        min_delta = 0
+
+        stopped_baseline = None
+        if stopped_baseline is not None:
+            best_loss = stopped_baseline
+        else:
+            best_loss = np.Inf
+        best_weights = None
+
+        train_loss.reset_state()
+        valid_loss.reset_state()
+        test_loss.reset_state()
+
+        for i in range(max_iter):
+            train_loss.reset_state()  # TODO: This line was not here before
+            valid_loss.reset_state()
+            test_loss.reset_state()
+
+            train_step_fun(x_train, y_train, x_valid, y_valid)
+
+            current_train_loss = train_loss.result()
+            current_valid_loss = valid_loss.result()
+
+            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
+                print(
+                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
+                )
+                break
+
+            if i % 100 == 0:
+                print(
+                    "Epoch: {}, train loss: {}, valid loss: {}".format(
+                        i, current_train_loss, current_valid_loss
+                    )
+                )
+
+            train_losses.append(current_train_loss.numpy())
+            valid_losses.append(current_valid_loss.numpy())
+
+            if (
+                self.configs["early_stop"]
+                and i >= self.configs["early_stop_start_iter"]
+            ):
+                if np.less(current_valid_loss - min_delta, best_loss):
+                    best_loss = current_valid_loss
+                    early_stop_wait = 0
+                    if self.configs["restore_best_weights"]:
+                        best_weights = network.get_weights()
+                else:
+                    early_stop_wait += 1
+                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
+                    if early_stop_wait >= self.configs["wait_patience"]:
+                        stop_training = True
+                        if self.configs["restore_best_weights"]:
+                            if best_weights is not None:
+                                if self.configs["verbose"] > 0:
+                                    print(
+                                        f"--- Restoring {network_type} model weights from the end of the best iteration"
+                                    )
+                                network.set_weights(best_weights)
+                        if self.configs["saveWeights"]:
+                            print(
+                                f"--- Saving best model weights to h5 file: {self.configs['data_name']}_best_{network_type}_iter_{i+1}.h5"
+                            )
+                            network.save_weights(
+                                os.getcwd()
+                                + f"/Results_PI3NN/checkpoints_{network_type}/"
+                                + self.configs["data_name"]
+                                + f"_best_{network_type}_iter_"
+                                + str(i + 1)
+                                + ".h5"
+                            )
+            iterations.append(i)
+            if stop_training:
+                print(
+                    "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
+                        i + 1, current_train_loss, current_valid_loss
+                    )
+                )
+                break
+
+        if self.configs["plot_loss_history"]:
+            self.plotter.plotTrainValidationLoss(
+                train_losses,
+                valid_losses,
+                trainPlotLabel="training loss",
+                validPlotLabel="valid loss",
+                xlabel="iterations",
+                ylabel="Loss",
+                title="("
+                + self.saveFigPrefix
+                + f")Train/valid (and test) loss for {network_type} values",
+                gridOn=True,
+                legendOn=True,
+                saveFigPath=self.configs["plot_loss_history_path"]
+                + self.saveFigPrefix
+                + f"_{network_type}_loss_seed_"
+                + str(self.configs["split_seed"])
+                + "_"
+                + str(self.configs["seed"])
+                + ".png",
+            )
+
+        if self.configs["save_loss_history"]:
+            loss_dict = {
+                "iter": iterations,
+                "train_loss": train_losses,
+                "valid_loss": valid_losses,
+            }
+
+            df_loss = pd.DataFrame(loss_dict)
+            df_loss.to_csv(
+                self.configs["save_loss_history_path"]
+                + self.configs["data_name"]
+                + f"_{network_type}_loss_seed_"
+                + str(self.configs["seed"])
+                + ".csv"
+            )
 
     def train(self):
         ## only print out the intermediate test evaluation for first testing data for simplicity
@@ -202,6 +334,7 @@ class CL_trainer:
         self.trainSteps.test_loss_net_mean.reset_state()
 
         for i in range(self.configs["Max_iter"]):
+            self.trainSteps.train_loss_net_mean.reset_state()  # TODO: This line was not here before
             self.trainSteps.valid_loss_net_mean.reset_state()
             self.trainSteps.test_loss_net_mean.reset_state()
 
@@ -310,32 +443,7 @@ class CL_trainer:
                 + ".csv"
             )
 
-        """ Generate up and down training/validation data """
-        diff_train = self.yTrain.reshape(
-            self.yTrain.shape[0], -1
-        ) - self.trainSteps.net_mean(self.xTrain, training=False)
-        yTrain_up_data = tf.expand_dims(diff_train[diff_train > 0], axis=1)
-        xTrain_up_data = self.xTrain[(diff_train > 0).numpy().flatten(), :]
-        yTrain_down_data = -1.0 * tf.expand_dims(diff_train[diff_train < 0], axis=1)
-        xTrain_down_data = self.xTrain[(diff_train < 0).numpy().flatten(), :]
-
-        self.xTrain_up = xTrain_up_data
-        self.yTrain_up = yTrain_up_data.numpy()
-        self.xTrain_down = xTrain_down_data
-        self.yTrain_down = yTrain_down_data.numpy()
-
-        diff_valid = self.yValid.reshape(
-            self.yValid.shape[0], -1
-        ) - self.trainSteps.net_mean(self.xValid, training=False)
-        yValid_up_data = tf.expand_dims(diff_valid[diff_valid > 0], axis=1)
-        xValid_up_data = self.xValid[(diff_valid > 0).numpy().flatten(), :]
-        yValid_down_data = -1.0 * tf.expand_dims(diff_valid[diff_valid < 0], axis=1)
-        xValid_down_data = self.xValid[(diff_valid < 0).numpy().flatten(), :]
-
-        self.xValid_up = xValid_up_data
-        self.yValid_up = yValid_up_data.numpy()
-        self.xValid_down = xValid_down_data
-        self.yValid_down = yValid_down_data.numpy()
+        xValid_up, yValid_up, xValid_down, yValid_down = self.createUpDownTrainingData()
 
         #######################################
         ##### ''' Training for the UP ''' #####
@@ -363,7 +471,7 @@ class CL_trainer:
             self.trainSteps.test_loss_net_std_up.reset_state()
 
             self.trainSteps.train_step_up(
-                self.xTrain_up, self.yTrain_up, self.xValid_up, self.yValid_up
+                self.xTrain_up, self.yTrain_up, xValid_up, yValid_up
             )
 
             current_train_loss = self.trainSteps.train_loss_net_std_up.result()
@@ -497,7 +605,7 @@ class CL_trainer:
             self.trainSteps.test_loss_net_std_down.reset_state()
 
             self.trainSteps.train_step_down(
-                self.xTrain_down, self.yTrain_down, self.xValid_down, self.yValid_down
+                self.xTrain_down, self.yTrain_down, xValid_down, yValid_down
             )
 
             current_train_loss = self.trainSteps.train_loss_net_std_down.result()
@@ -602,11 +710,35 @@ class CL_trainer:
                 + ".csv"
             )
 
-        ### test prediction
+    def createUpDownTrainingData(self):
+        """Generate up and down training/validation data"""
+        diff_train = self.yTrain.reshape(
+            self.yTrain.shape[0], -1
+        ) - self.trainSteps.net_mean(self.xTrain, training=False)
+        yTrain_up_data = tf.expand_dims(diff_train[diff_train > 0], axis=1)
+        xTrain_up_data = self.xTrain[(diff_train > 0).numpy().flatten(), :]
+        yTrain_down_data = -1.0 * tf.expand_dims(diff_train[diff_train < 0], axis=1)
+        xTrain_down_data = self.xTrain[(diff_train < 0).numpy().flatten(), :]
 
-        # train_output = self.trainSteps.net_mean(self.xTrain, training=False)
-        # train_output_up = self.trainSteps.net_std_up(self.xTrain, training=False)
-        # train_output_down = self.trainSteps.net_std_down(self.xTrain, training=False)
+        self.xTrain_up = xTrain_up_data
+        self.yTrain_up = yTrain_up_data.numpy()
+        self.xTrain_down = xTrain_down_data
+        self.yTrain_down = yTrain_down_data.numpy()
+
+        diff_valid = self.yValid.reshape(
+            self.yValid.shape[0], -1
+        ) - self.trainSteps.net_mean(self.xValid, training=False)
+        yValid_up_data = tf.expand_dims(diff_valid[diff_valid > 0], axis=1)
+        xValid_up_data = self.xValid[(diff_valid > 0).numpy().flatten(), :]
+        yValid_down_data = -1.0 * tf.expand_dims(diff_valid[diff_valid < 0], axis=1)
+        xValid_down_data = self.xValid[(diff_valid < 0).numpy().flatten(), :]
+
+        return (
+            xValid_up_data,
+            yValid_up_data.numpy(),
+            xValid_down_data,
+            yValid_down_data.numpy(),
+        )
 
     def boundaryOptimization(self, verbose=0):
         Ntrain = self.xTrain.shape[0]
