@@ -78,8 +78,9 @@ class CL_dataLoader:
         else:
             print("Loading artificial dataset")
             from pathlib import Path
-            X = np.load(Path(self.data_dir).parent /  "X_arti.npy").reshape(-1, 1)
-            Y = np.load(Path(self.data_dir).parent /  "Y_arti.npy")
+
+            X = np.load(Path(self.data_dir).parent / "X_arti.npy").reshape(-1, 1)
+            Y = np.load(Path(self.data_dir).parent / "Y_arti.npy")
         return X, Y
 
     def getNumInputsOutputs(self, inputsOutputs_np):
@@ -181,7 +182,6 @@ class CL_trainer:
                 + "\n"
             )
 
-
         """ Main training iterations """
 
         #######################################
@@ -204,7 +204,6 @@ class CL_trainer:
         self.trainSteps.train_loss_net_mean.reset_state()
         self.trainSteps.valid_loss_net_mean.reset_state()
         self.trainSteps.test_loss_net_mean.reset_state()
-
 
         for i in range(self.configs["Max_iter"]):
             self.trainSteps.valid_loss_net_mean.reset_state()
@@ -349,7 +348,6 @@ class CL_trainer:
         self.xValid_down = xValid_down_data
         self.yValid_down = yValid_down_data.numpy()
 
-
         #######################################
         ##### ''' Training for the UP ''' #####
         #######################################
@@ -394,7 +392,6 @@ class CL_trainer:
                     "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
                 )
                 break
-
 
             if i % 100 == 0:
                 print(
@@ -568,9 +565,7 @@ class CL_trainer:
                                     print(
                                         "--- Restoring std_down model weights from the end of the best iteration"
                                     )
-                                self.trainSteps.net_std_down.set_weights(
-                                    best_weights
-                                )
+                                self.trainSteps.net_std_down.set_weights(best_weights)
                         if self.configs["saveWeights"]:
                             print(
                                 "--- Saving best model weights to h5 file: {}_best_std_down_iter_{}.h5".format(
@@ -1211,7 +1206,6 @@ class CL_UQ_Net_train_steps:
         decay_steps=None,
         decay_rate=None,
     ):
-
         self.exponential_decay = exponential_decay
         self.decay_steps = decay_steps
         self.decay_rate = decay_rate
@@ -1325,7 +1319,6 @@ class CL_UQ_Net_train_steps:
                 loss += l.bias_regularizer(l.bias)
         return loss
 
-
     @tf.function
     def train_step_mean(
         self,
@@ -1337,7 +1330,7 @@ class CL_UQ_Net_train_steps:
         yTest=None,
         testDataEvaluationDuringTrain=False,
     ):
-        """ Training/validation for mean values (For Non-batch training)"""
+        """Training/validation for mean values (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_mean(xTrain, training=True)
             train_loss = self.criterion_mean(yTrain, train_predictions)
@@ -1368,10 +1361,9 @@ class CL_UQ_Net_train_steps:
         if self.exponential_decay:
             self.global_step_0.assign_add(1)
 
-
     @tf.function
     def batch_train_step_mean(self, x_batch_train, y_batch_train):
-        """ Training/validation/testing for mean values (batch version) """
+        """Training/validation/testing for mean values (batch version)"""
         with tf.GradientTape() as tape:
             batch_train_predictions = self.net_mean(x_batch_train, training=True)
             batch_train_loss = self.criterion_mean(
@@ -1404,7 +1396,6 @@ class CL_UQ_Net_train_steps:
             batch_test_loss = self.criterion_mean(y_batch_test, batch_test_predictions)
         self.test_loss_net_mean(batch_test_loss)
 
-
     @tf.function
     def train_step_up(
         self,
@@ -1416,7 +1407,7 @@ class CL_UQ_Net_train_steps:
         yTest=None,
         testDataEvaluationDuringTrain=False,
     ):
-        """ Training/validation for upper boundary (For Non-batch training) """
+        """Training/validation for upper boundary (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_std_up(xTrain, training=True)
             train_loss = self.criterion_std(yTrain, train_predictions)
@@ -1445,10 +1436,9 @@ class CL_UQ_Net_train_steps:
         if self.exponential_decay:
             self.global_step_1.assign_add(1)
 
-
     @tf.function
     def batch_train_step_up(self, x_batch_train, y_batch_train):
-        """ Training/validation/testing for UP values (batch version) """
+        """Training/validation/testing for UP values (batch version)"""
         with tf.GradientTape() as tape:
             batch_train_predictions = self.net_std_up(x_batch_train, training=True)
             batch_train_loss = self.criterion_std(
@@ -1480,7 +1470,6 @@ class CL_UQ_Net_train_steps:
             batch_test_loss = self.criterion_std(y_batch_test, batch_test_predictions)
         self.test_loss_net_std_up(batch_test_loss)
 
-
     @tf.function
     def train_step_down(
         self,
@@ -1492,7 +1481,7 @@ class CL_UQ_Net_train_steps:
         yTest=None,
         testDataEvaluationDuringTrain=False,
     ):
-        """ Training/validation for lower boundary (For Non-batch training)"""
+        """Training/validation for lower boundary (For Non-batch training)"""
         with tf.GradientTape() as tape:
             train_predictions = self.net_std_down(xTrain, training=True)
             train_loss = self.criterion_std(yTrain, train_predictions)
@@ -1521,10 +1510,9 @@ class CL_UQ_Net_train_steps:
         if self.exponential_decay:
             self.global_step_2.assign_add(1)
 
-
     @tf.function
     def batch_train_step_down(self, x_batch_train, y_batch_train):
-        """ Training/validation/testing for DOWN values (batch version) """
+        """Training/validation/testing for DOWN values (batch version)"""
         with tf.GradientTape() as tape:
             batch_train_predictions = self.net_std_down(x_batch_train, training=True)
             batch_train_loss = self.criterion_std(
@@ -1711,7 +1699,6 @@ def main():
     # Force using CPU globally by hiding GPU(s), comment the line of code below to enable GPU
     tf.config.set_visible_devices([], "GPU")
 
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--data",
@@ -1841,15 +1828,19 @@ def main():
     trainer.boundaryOptimization(verbose=1)  # boundary optimization
     trainer.testDataPrediction()  # evaluation of the trained nets on testing data
     trainer.capsCalculation(final_evaluation=True, verbose=1)  # metrics calculation
-    trainer.saveResultsToTxt()      # save results to txt file
+    trainer.saveResultsToTxt()  # save results to txt file
 
     fig, ax = plt.subplots()
     ax.plot(xTrain, yTrain, ".")
     y_U_PI_array_train = (
-        (trainer.train_output + trainer.c_up * trainer.train_output_up).numpy().flatten()
+        (trainer.train_output + trainer.c_up * trainer.train_output_up)
+        .numpy()
+        .flatten()
     )
     y_L_PI_array_train = (
-        (trainer.train_output - trainer.c_down * trainer.train_output_down).numpy().flatten()
+        (trainer.train_output - trainer.c_down * trainer.train_output_down)
+        .numpy()
+        .flatten()
     )
     y_mean = trainer.train_output.numpy().flatten()
     sort_indices = np.argsort(xTrain.flatten())
