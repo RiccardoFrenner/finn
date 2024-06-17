@@ -164,7 +164,6 @@ class CL_trainer:
             best_loss = stopped_baseline
         else:
             best_loss = np.Inf
-        best_weights = None
 
         iterations = self.training_statistics[network_type].loss_iter
         train_losses = self.training_statistics[network_type].loss_train
@@ -216,43 +215,6 @@ class CL_trainer:
                 )
                 break
 
-        if self.configs["plot_loss_history"]:
-            self.plotter.plotTrainValidationLoss(
-                train_losses,
-                valid_losses,
-                trainPlotLabel="training loss",
-                validPlotLabel="valid loss",
-                xlabel="iterations",
-                ylabel="Loss",
-                title="("
-                + self.saveFigPrefix
-                + f")Train/valid (and test) loss for {network_type} values",
-                gridOn=True,
-                legendOn=True,
-                saveFigPath=self.configs["plot_loss_history_path"]
-                + self.saveFigPrefix
-                + f"_{network_type}_loss_seed_"
-                + str(self.configs["split_seed"])
-                + "_"
-                + str(self.configs["seed"])
-                + ".png",
-            )
-
-        if self.configs["save_loss_history"]:
-            loss_dict = {
-                "iter": iterations,
-                "train_loss": train_losses,
-                "valid_loss": valid_losses,
-            }
-
-            df_loss = pd.DataFrame(loss_dict)
-            df_loss.to_csv(
-                self.configs["save_loss_history_path"]
-                + self.configs["data_name"]
-                + f"_{network_type}_loss_seed_"
-                + str(self.configs["seed"])
-                + ".csv"
-            )
 
     def train(self):
         results_path = (
@@ -949,10 +911,6 @@ def main():
     configs["split_seed"] = "WhatIsThis?"
     configs["experiment_id"] = 1
     configs["verbose"] = 1
-    configs["save_loss_history"] = True
-    configs["save_loss_history_path"] = "./Results_PI3NN/loss_history/"
-    configs["plot_loss_history"] = True
-    configs["plot_loss_history_path"] = "./Results_PI3NN/loss_curves/"
 
     ######################################################################################
     # TODO: Re-Implement this
