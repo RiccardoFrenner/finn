@@ -1,18 +1,65 @@
 import argparse
-import math
 import os
 import random
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import r2_score
+from scipy.optimize import bisect
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+
+
+class EarlyStopper:
+    def __init__(self, patience=7, verbose=False, delta=0, path="checkpoint.pt"):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+                            Default: 7
+            verbose (bool): If True, prints a message for each validation loss improvement.
+                            Default: False
+            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
+                            Default: 0
+            path (str): Path for the checkpoint to be saved to.
+                            Default: 'checkpoint.pt'
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.delta = delta
+        self.path = path
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.Inf
+
+    def update(self, val_loss, model):
+        score = -val_loss
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopper counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(val_loss, model)
+            self.counter = 0
+
+    def save_checkpoint(self, val_loss, model):
+        """Saves model when validation loss decrease."""
+        if self.verbose:
+            print(
+                f"Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ..."
+            )
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = val_loss
 
 
 class CL_dataLoader:
@@ -50,30 +97,125 @@ class CL_dataLoader:
         return numInputsOutputs
 
 
-@dataclass
-class TrainingStatistics:
-    loss_train: list[float] = field(init=False, default_factory=list)
-    loss_valid: list[float] = field(init=False, default_factory=list)
-    loss_test: list[float] = field(init=False, default_factory=list)
-    loss_iter: list[int] = field(init=False, default_factory=list)
+def caps_calculation(network_preds: dict[str, Any], c_up, c_down, Y, verbose=0):
+    """Caps calculations for single quantile"""
+
+    if verbose > 0:
+        print("--- Start caps calculations for SINGLE quantile ---")
+        print("**************** For Training data *****************")
+
+    if len(Y.shape) == 2:
+        Y = Y.flatten()
+
+    bound_up = (network_preds["mean"] + c_up * network_preds["up"]).numpy().flatten()
+    bound_down = (
+        (network_preds["mean"] - c_down * network_preds["down"]).numpy().flatten()
+    )
+
+    y_U_cap = bound_up > Y  # y_U_cap
+    y_L_cap = bound_down < Y  # y_L_cap
+
+    y_all_cap = np.logical_or(y_U_cap, y_L_cap)  # y_all_cap
+    PICP = np.count_nonzero(y_all_cap) / y_L_cap.shape[0]  # 0-1
+    MPIW = np.mean(
+        (network_preds["mean"] + c_up * network_preds["up"]).numpy().flatten()
+        - (network_preds["mean"] - c_down * network_preds["down"]).numpy().flatten()
+    )
+    if verbose > 0:
+        print(f"Num of train in y_U_cap: {np.count_nonzero(y_U_cap)}")
+        print(f"Num of train in y_L_cap: {np.count_nonzero(y_L_cap)}")
+        print(f"Num of train in y_all_cap: {np.count_nonzero(y_all_cap)}")
+        print(f"np.sum results(train): {np.sum(y_all_cap)}")
+        print(f"PICP: {PICP}")
+        print(f"MPIW: {MPIW}")
+
+    return (
+        PICP,
+        MPIW,
+    )
 
 
-@dataclass
-class TrainingData:
-    x_train: Any
-    y_train: Any
-    x_valid: Any
-    y_valid: Any
-    x_test: Any
-    y_test: Any
+def optimize_bound(
+    *,
+    mode: str,
+    y_train: np.ndarray,
+    pred_mean: np.ndarray,
+    pred_std: np.ndarray,
+    num_outliers: int,
+    c0: float = 0.0,
+    c1: float = 1e5,
+    maxiter: int = 1000,
+    verbose=0,
+):
+    def count_exceeding_upper_bound(c: float):
+        bound = pred_mean + c * pred_std
+        f = np.count_nonzero(y_train >= bound) - num_outliers
+        return f
+
+    def count_exceeding_lower_bound(c: float):
+        bound = pred_mean - c * pred_std
+        f = np.count_nonzero(y_train <= bound) - num_outliers
+        return f
+
+    objective_function = (
+        count_exceeding_upper_bound if mode == "up" else count_exceeding_lower_bound
+    )
+
+    if verbose > 0:
+        print(f"Initial bounds: [{c0}, {c1}]")
+
+    try:
+        optimal_c = bisect(objective_function, c0, c1, maxiter=maxiter)
+        if verbose > 0:
+            final_count = objective_function(optimal_c)
+            print(f"Optimal c: {optimal_c}, Final count: {final_count}")
+        return optimal_c
+    except ValueError as e:
+        if verbose > 0:
+            print(f"Bisect method failed: {e}")
+        raise e
+
+
+def compute_boundary_factors(
+    *, y_train: np.ndarray, network_preds: dict[str, Any], quantile: float, verbose=0
+):
+    n_train = y_train.shape[0]
+    num_outlier = int(n_train * (1 - quantile) / 2)
+
+    if verbose > 0:
+        print(
+            "--- Start boundary optimizations for SINGLE quantile: {}".format(quantile)
+        )
+        print(
+            "--- Number of outlier based on the defined quantile: {}".format(
+                num_outlier
+            )
+        )
+
+    c_up, c_down = [
+        optimize_bound(
+            y_train=y_train,
+            pred_mean=network_preds["mean"],
+            pred_std=network_preds[mode],
+            mode=mode,
+            num_outliers=num_outlier,
+        )
+        for mode in ["up", "down"]
+    ]
+
+    if verbose > 0:
+        print("--- c_up: {}".format(c_up))
+        print("--- c_down: {}".format(c_down))
+
+    return c_up, c_down
 
 
 def create_PI_training_data(
-    mean_network, X, Y
+    network_mean, X, Y
 ) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     """Generate up and down training data"""
     with torch.no_grad():
-        diff_train = Y.reshape(Y.shape[0], -1) - mean_network(X)
+        diff_train = Y.reshape(Y.shape[0], -1) - network_mean(X)
         up_idx = diff_train > 0
         down_idx = diff_train < 0
 
@@ -86,6 +228,45 @@ def create_PI_training_data(
     return ((X_up, Y_up), (X_down, Y_down))
 
 
+def train_network(
+    model, optimizer, criterion, train_loader, val_loader, max_epochs: int
+) -> None:
+    early_stopper = EarlyStopper(patience=300, verbose=False)
+
+    for epoch in range(1, max_epochs + 1):
+        # Training phase
+        model.train()
+        for data, target in train_loader:
+            optimizer.zero_grad()
+            output = model(data)
+            loss_train = criterion(output, target)
+            loss_train.backward()
+            optimizer.step()
+
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for data, target in val_loader:
+                output = model(data)
+                loss_valid = criterion(output, target)
+                val_loss += loss_valid.item()
+        val_loss = val_loss / len(val_loader)
+
+        if epoch % max(1, max_epochs // 100) == 0:
+            print(f"Epoch {epoch}, Validation Loss: {val_loss:.6f}")
+
+        # Check early stopping condition
+        early_stopper.update(val_loss, model)
+        if early_stopper.early_stop:
+            print("Early stopping")
+            break
+
+    # Load the last checkpoint with the best model
+    # TODO: This does not actually look better in the plot?
+    # model.load_state_dict(torch.load('checkpoint.pt'))
+
+
 class CL_trainer:
     def __init__(
         self,
@@ -93,12 +274,12 @@ class CL_trainer:
         net_mean,
         net_up,
         net_down,
-        xTrain,
-        yTrain,
-        xValid=None,
-        yValid=None,
-        xTest=None,
-        yTest=None,
+        x_train,
+        y_train,
+        x_valid,
+        y_valid,
+        x_test=None,
+        y_test=None,
     ):
         """Take all 3 network instance and the trainSteps (CL_UQ_Net_train_steps) instance"""
 
@@ -109,420 +290,61 @@ class CL_trainer:
             "up": net_up,
             "down": net_down,
         }
-
-        self.training_data = TrainingData(xTrain, yTrain, xValid, yValid, xTest, yTest)
-
-        self.trainSteps = CL_UQ_Net_train_steps(self.networks)
-        self.training_statistics = {
-            k: TrainingStatistics() for k in self.networks.keys()
-        }
-        self.saveFigPrefix = self.configs["data_name"]  # prefix for the saved plots
-
-    def main_train_step(
-        self,
-        network_type: Literal["mean", "up", "down"],
-        training_data: TrainingData,
-        max_iter: int,
-    ):
-        """Training for the different networks"""
-
-        network = self.trainSteps.networks[network_type]
-        optimizer = self.trainSteps.optimizers[network_type]
-
-        print(f"--- Start training for {network_type} ---")
-        stop_training = False
-        early_stop_wait = 0
-        min_delta = 0
-
-        stopped_baseline = None
-        if stopped_baseline is not None:
-            best_loss = stopped_baseline
-        else:
-            best_loss = np.Inf
-
-        iterations = self.training_statistics[network_type].loss_iter
-        train_losses = self.training_statistics[network_type].loss_train
-        valid_losses = self.training_statistics[network_type].loss_valid
-        for i in range(max_iter):
-            current_train_loss, current_valid_loss = self.trainSteps.train_step(
-                network,
-                optimizer,
-                training_data.x_train,
-                training_data.y_train,
-                training_data.x_valid,
-                training_data.y_valid,
+        self.optimizers = {
+            network_type: torch.optim.Adam(
+                network.parameters(), lr=0.02, weight_decay=2e-2
             )
+            for network_type, network in self.networks.items()
+        }
 
-            if math.isnan(current_train_loss) or math.isnan(current_valid_loss):
-                print(
-                    "--- WARNING: NaN(s) detected, stop or go to next sets of tuning parameters..."
-                )
-                break
-
-            if i % 100 == 0:
-                print(
-                    "Epoch: {}, train loss: {}, valid loss: {}".format(
-                        i, current_train_loss, current_valid_loss
-                    )
-                )
-
-            train_losses.append(current_train_loss)
-            valid_losses.append(current_valid_loss)
-
-            if (
-                self.configs["early_stop"]
-                and i >= self.configs["early_stop_start_iter"]
-            ):
-                if np.less(current_valid_loss - min_delta, best_loss):
-                    best_loss = current_valid_loss
-                    early_stop_wait = 0
-                else:
-                    early_stop_wait += 1
-                    # print('--- Iter: {}, early_stop_wait: {}'.format(i+1, early_stop_wait))
-                    if early_stop_wait >= self.configs["wait_patience"]:
-                        stop_training = True
-            iterations.append(i)
-            if stop_training:
-                print(
-                    "--- Early stopping criteria met.  Epoch: {}, train_loss:{}, valid_loss:{}".format(
-                        i + 1, current_train_loss, current_valid_loss
-                    )
-                )
-                break
+        self.x_train = x_train
+        self.y_train = y_train
+        self.x_valid = x_valid
+        self.y_valid = y_valid
+        self.x_test = x_test
+        self.y_test = y_test
 
     def train(self):
-        self.main_train_step(
-            network_type="mean",
-            training_data=self.training_data,
-            max_iter=self.configs["Max_iter"],
+        train_network(
+            model=self.networks["mean"],
+            optimizer=self.optimizers["mean"],
+            criterion=nn.MSELoss(),
+            train_loader=[(self.x_train, self.y_train)],
+            val_loader=[(self.x_valid, self.y_valid)],
+            max_epochs=self.configs["Max_iter"],
         )
 
         # IMPORTANT: has to be created after mean network finished training
-        training_data_up, training_data_down = self.createUpDownTrainingData()
-        self.main_train_step(
-            network_type="up",
-            training_data=training_data_up,
-            max_iter=self.configs["Max_iter"],
+        data_train_up, data_train_down = create_PI_training_data(
+            self.networks["mean"], X=self.x_train, Y=self.y_train
         )
-        self.main_train_step(
-            network_type="down",
-            training_data=training_data_down,
-            max_iter=self.configs["Max_iter"],
+        data_val_up, data_val_down = create_PI_training_data(
+            self.networks["mean"], X=self.x_valid, Y=self.y_valid
         )
 
-    def createUpDownTrainingData(self) -> tuple[TrainingData, TrainingData]:
-        """Generate up and down training/validation data"""
-        xTrain = self.training_data.x_train
-        xValid = self.training_data.x_valid
-        yTrain = self.training_data.y_train
-        yValid = self.training_data.y_valid
-
-        (xTrain_up, yTrain_up), (xTrain_down, yTrain_down) = create_PI_training_data(
-            mean_network=self.trainSteps.networks["mean"], X=xTrain, Y=yTrain
+        train_network(
+            model=self.networks["up"],
+            optimizer=self.optimizers["up"],
+            criterion=nn.MSELoss(),
+            train_loader=[data_train_up],
+            val_loader=[data_val_up],
+            max_epochs=self.configs["Max_iter"],
         )
-        (xValid_up, yValid_up), (xValid_down, yValid_down) = create_PI_training_data(
-            mean_network=self.trainSteps.networks["mean"], X=xValid, Y=yValid
-        )
-
-        return (
-            TrainingData(xTrain_up, yTrain_up, xValid_up, yValid_up, None, None),
-            TrainingData(
-                xTrain_down, yTrain_down, xValid_down, yValid_down, None, None
-            ),
+        train_network(
+            model=self.networks["down"],
+            optimizer=self.optimizers["down"],
+            criterion=nn.MSELoss(),
+            train_loader=[data_train_down],
+            val_loader=[data_val_down],
+            max_epochs=self.configs["Max_iter"],
         )
 
-    def boundaryOptimization(self, quantile: float, verbose=0):
-        with torch.no_grad():
-            all_output = self.eval_networks(self.training_data.x_train)
-        output = all_output["mean"]
-        output_up = all_output["up"]
-        output_down = all_output["down"]
-
-        Ntrain = self.training_data.x_train.shape[0]
-        num_outlier = int(Ntrain * (1 - quantile) / 2)
-
-        if verbose > 0:
-            print(
-                "--- Start boundary optimizations for SINGLE quantile: {}".format(
-                    quantile
-                )
-            )
-            print(
-                "--- Number of outlier based on the defined quantile: {}".format(
-                    num_outlier
-                )
-            )
-
-        boundaryOptimizer = CL_boundary_optimizer(
-            self.training_data.y_train,
-            output,
-            output_up,
-            output_down,
-            num_outlier=num_outlier,
-            c_up0_ini=0.0,
-            c_up1_ini=100000.0,
-            c_down0_ini=0.0,
-            c_down1_ini=100000.0,
-            max_iter=1000,
-        )
-
-        c_up = boundaryOptimizer.optimize_up(verbose=0)
-        c_down = boundaryOptimizer.optimize_down(verbose=0)
-
-        if verbose > 0:
-            print("--- c_up: {}".format(c_up))
-            print("--- c_down: {}".format(c_down))
-
-        return c_up, c_down
-
-    def eval_networks(self, x) -> dict[str, Any]:
+    def eval_networks(self, x, as_numpy: bool = False) -> dict[str, Any]:
         with torch.no_grad():
             d = {k: network(x) for k, network in self.networks.items()}
+        if as_numpy:
+            d = {k: v.numpy() for k, v in d.items()}
         return d
-
-
-@dataclass
-class PredictionIntervalComputer:
-    pred_train: dict[str, Any]
-    pred_valid: dict[str, Any]
-    pred_test: dict[str, Any]
-
-    @property
-    def train_output(self):
-        return self.pred_train["mean"]
-
-    @property
-    def train_output_up(self):
-        return self.pred_train["up"]
-
-    @property
-    def train_output_down(self):
-        return self.pred_train["down"]
-
-    @property
-    def valid_output(self):
-        return self.pred_valid["mean"]
-
-    @property
-    def valid_output_up(self):
-        return self.pred_valid["up"]
-
-    @property
-    def valid_output_down(self):
-        return self.pred_valid["down"]
-
-    @property
-    def test_output(self):
-        return self.pred_test["mean"]
-
-    @property
-    def test_output_up(self):
-        return self.pred_test["up"]
-
-    @property
-    def test_output_down(self):
-        return self.pred_test["down"]
-
-    def capsCalculation(self, c_up, c_down, yTrain, yValid, yTest, verbose=0):
-        ### caps calculations for single quantile
-        if verbose > 0:
-            print("--- Start caps calculations for SINGLE quantile ---")
-            print("**************** For Training data *****************")
-        if len(yTrain.shape) == 2:
-            yTrain = yTrain.flatten()
-        y_U_cap_train = (
-            self.train_output + c_up * self.train_output_up
-        ).numpy().flatten() > yTrain
-        y_L_cap_train = (
-            self.train_output - c_down * self.train_output_down
-        ).numpy().flatten() < yTrain
-
-        y_all_cap_train = y_U_cap_train * y_L_cap_train  # logic_or
-        self.PICP_train = np.sum(y_all_cap_train) / y_L_cap_train.shape[0]  # 0-1
-        self.MPIW_train = np.mean(
-            (self.train_output + c_up * self.train_output_up).numpy().flatten()
-            - (self.train_output - c_down * self.train_output_down).numpy().flatten()
-        )
-        if verbose > 0:
-            print(
-                "Num of train in y_U_cap_train: {}".format(
-                    np.count_nonzero(y_U_cap_train)
-                )
-            )
-            print(
-                "Num of train in y_L_cap_train: {}".format(
-                    np.count_nonzero(y_L_cap_train)
-                )
-            )
-            print(
-                "Num of train in y_all_cap_train: {}".format(
-                    np.count_nonzero(y_all_cap_train)
-                )
-            )
-            print("np.sum results(train): {}".format(np.sum(y_all_cap_train)))
-            print("PICP_train: {}".format(self.PICP_train))
-            print("MPIW_train: {}".format(self.MPIW_train))
-
-        ### for validation data
-        if verbose > 0:
-            print("**************** For Validation data *****************")
-        if len(yValid.shape) == 2:
-            yValid = yValid.flatten()
-        y_U_cap_valid = (
-            self.valid_output + c_up * self.valid_output_up
-        ).numpy().flatten() > yValid
-        y_L_cap_valid = (
-            self.valid_output - c_down * self.valid_output_down
-        ).numpy().flatten() < yValid
-        y_all_cap_valid = y_U_cap_valid * y_L_cap_valid  # logic_or
-        self.PICP_valid = np.sum(y_all_cap_valid) / y_L_cap_valid.shape[0]  # 0-1
-        self.MPIW_valid = np.mean(
-            (self.valid_output + c_up * self.valid_output_up).numpy().flatten()
-            - (self.valid_output - c_down * self.valid_output_down).numpy().flatten()
-        )
-        if verbose > 0:
-            print(
-                "Num of valid in y_U_cap_valid: {}".format(
-                    np.count_nonzero(y_U_cap_valid)
-                )
-            )
-            print(
-                "Num of valid in y_L_cap_valid: {}".format(
-                    np.count_nonzero(y_L_cap_valid)
-                )
-            )
-            print(
-                "Num of valid in y_all_cap_valid: {}".format(
-                    np.count_nonzero(y_all_cap_valid)
-                )
-            )
-            print("np.sum results(valid): {}".format(np.sum(y_all_cap_valid)))
-            print("PICP_valid: {}".format(self.PICP_valid))
-            print("MPIW_valid: {}".format(self.MPIW_valid))
-
-        if verbose > 0:
-            print("**************** For Testing data *****************")
-        if len(yTest.shape) == 2:
-            yTest = yTest.flatten()
-        y_U_cap_test = (
-            self.test_output + c_up * self.test_output_up
-        ).numpy().flatten() > yTest
-        y_L_cap_test = (
-            self.test_output - c_down * self.test_output_down
-        ).numpy().flatten() < yTest
-        y_all_cap_test = y_U_cap_test * y_L_cap_test  # logic_or
-        self.PICP_test = np.sum(y_all_cap_test) / y_L_cap_test.shape[0]  # 0-1
-        self.MPIW_test = np.mean(
-            (self.test_output + c_up * self.test_output_up).numpy().flatten()
-            - (self.test_output - c_down * self.test_output_down).numpy().flatten()
-        )
-        # print('y_U_cap: {}'.format(y_U_cap))
-        # print('y_L_cap: {}'.format(y_L_cap))
-        if verbose > 0:
-            print("Num of true in y_U_cap: {}".format(np.count_nonzero(y_U_cap_test)))
-            print("Num of true in y_L_cap: {}".format(np.count_nonzero(y_L_cap_test)))
-            print(
-                "Num of true in y_all_cap: {}".format(np.count_nonzero(y_all_cap_test))
-            )
-            print("np.sum results: {}".format(np.sum(y_all_cap_test)))
-            print("PICP_test: {}".format(self.PICP_test))
-            print("MPIW_test: {}".format(self.MPIW_test))
-
-        # print(y_all_cap)
-        # print(np.sum(y_all_cap_test))
-
-        self.MSE_test = np.mean(np.square(self.test_output.numpy().flatten() - yTest))
-        self.RMSE_test = np.sqrt(self.MSE_test)
-        self.R2_test = r2_score(yTest, self.test_output.numpy().flatten())
-        if verbose > 0:
-            print("Test MSE: {}".format(self.MSE_test))
-            print("Test RMSE: {}".format(self.RMSE_test))
-            print("Test R2: {}".format(self.R2_test))
-
-        return (
-            self.PICP_train,
-            self.PICP_valid,
-            self.PICP_test,
-            self.MPIW_train,
-            self.MPIW_valid,
-            self.MPIW_test,
-        )
-
-    def saveResultsToTxt(
-        self, configs: dict[str, Any], PICP_test, MPIW_test, RMSE_test, R2_test
-    ):
-        """Save results to txt file"""
-        results_path = "./Results_PI3NN/" + configs["data_name"] + "_PI3NN_results.txt"
-        with open(results_path, "a") as fwrite:
-            fwrite.write(
-                str(configs["experiment_id"])
-                + " "
-                + str(configs["seed"])
-                + " "
-                + str(round(PICP_test, 3))
-                + " "
-                + str(round(MPIW_test, 3))
-                + " "
-                + str(round(RMSE_test, 3))
-                + " "
-                + str(round(R2_test, 3))
-                + "\n"
-            )
-
-    def save_PI(self, c_up: float, c_down: float, bias=0.0):
-        y_U_PI_array_train = (
-            (self.train_output + c_up * self.train_output_up).numpy().flatten()
-        )
-        y_L_PI_array_train = (
-            (self.train_output - c_down * self.train_output_down).numpy().flatten()
-        )
-
-        y_U_PI_array_test = (
-            (self.test_output + c_up * self.test_output_up).numpy().flatten()
-        )
-        y_L_PI_array_test = (
-            (self.test_output - c_down * self.test_output_down).numpy().flatten()
-        )
-
-        path = "./Results_PI3NN/npy/"
-        train_bounds = np.vstack((y_U_PI_array_train, y_L_PI_array_train))
-        test_bounds = np.vstack((y_U_PI_array_test, y_L_PI_array_test))
-        np.save(path + "train_bounds" + "_bias_" + str(bias) + ".npy", train_bounds)
-        np.save(path + "test_bounds" + "_bias_" + str(bias) + ".npy", test_bounds)
-        np.save(path + "yTrain" + "_bias_" + str(bias) + ".npy", yTrain)
-        np.save(path + "yTest" + "_bias_" + str(bias) + ".npy", self.yTest)
-        print("--- results npy saved")
-
-
-def load_and_plot_PI(bias=0.0):
-    path = "./Results_PI3NN/npy/"
-    path_fig = "./Results_PI3NN/plots/"
-
-    train_bounds = np.load(path + "train_bounds" + "_bias_" + str(bias) + ".npy")
-    test_bounds = np.load(path + "test_bounds" + "_bias_" + str(bias) + ".npy")
-    yTrain = np.load(path + "yTrain" + "_bias_" + str(bias) + ".npy")
-    yTest = np.load(path + "yTest" + "_bias_" + str(bias) + ".npy")
-
-    fig, ax = plt.subplots(1)
-    x_train_arr = np.arange(len(train_bounds[0]))
-    x_test_arr = np.arange(
-        len(train_bounds[0]), len(train_bounds[0]) + len(test_bounds[0])
-    )
-
-    ax.scatter(x_train_arr, train_bounds[0], s=0.01, label="Train UP")
-    ax.scatter(x_train_arr, train_bounds[1], s=0.01, label="Train DOWN")
-
-    ax.scatter(x_test_arr, test_bounds[0], s=0.01, label="Test UP")
-    ax.scatter(x_test_arr, test_bounds[1], s=0.01, label="Test DOWN")
-
-    ax.scatter(x_train_arr, yTrain, s=0.01, label="yTrain")
-    ax.scatter(x_test_arr, yTest, s=0.01, label="yTest")
-
-    plt.title("PI3NN bounds prediction for flight delay data, bias:{}".format(bias))
-    plt.grid()
-    plt.legend()
-    plt.savefig(path_fig + "bounds" + "_bias_" + str(bias) + ".png", dpi=300)
-    # plt.show()
 
 
 # TODO: Add regularization to optimizer step
@@ -594,187 +416,6 @@ class UQ_Net_std(nn.Module):
         return x
 
 
-class CL_UQ_Net_train_steps:
-    def __init__(
-        self,
-        networks: dict[str, Any],
-        lrs={"mean": 0.01, "up": 0.01, "down": 0.01},
-    ):
-        self.criterion_mean = nn.MSELoss()
-        self.criterion_std = nn.MSELoss()
-
-        self.networks = networks
-
-        # TODO: LR schedule
-
-        # weight decay is (very similar) to L2 regularization
-        self.optimizers = {
-            k: torch.optim.Adam(
-                self.networks[k].parameters(), lr=lrs[k], weight_decay=1e-5
-            )
-            for k in self.networks.keys()
-        }
-
-    def train_step(self, network, optimizer, xTrain, yTrain, xValid, yValid):
-        network.train()  # Set model to training mode
-        yPred = network(xTrain)
-        train_loss = self.criterion_mean(yTrain, yPred)
-
-        # Add regularization losses (example using L2)
-        l2_loss = 0
-        for param in network.parameters():
-            l2_loss += torch.sum(torch.square(param))
-        train_loss += 0.01 * l2_loss  # Add regularization loss to training loss
-
-        optimizer.zero_grad()  # Clear gradients
-        train_loss.backward()  # Calculate gradients
-        optimizer.step()  # Update weights
-
-        # Validation
-        network.eval()  # Set model to evaluation mode
-        with torch.no_grad():  # Disable gradient computation for validation
-            valid_predictions = network(xValid)
-            valid_loss = self.criterion_mean(yValid, valid_predictions)
-
-        return train_loss.item(), valid_loss.item()
-
-
-class CL_boundary_optimizer:
-    def __init__(
-        self,
-        yTrain,
-        output_mean,
-        output_up,
-        output_down,
-        num_outlier=None,
-        c_up0_ini=None,
-        c_up1_ini=None,
-        c_down0_ini=None,
-        c_down1_ini=None,
-        max_iter=None,
-    ):
-        self.yTrain = yTrain.numpy().flatten()
-
-        self.output_mean = output_mean
-        self.output_up = output_up
-        self.output_down = output_down
-        if num_outlier is not None:
-            self.num_outlier = num_outlier
-        self.c_up0_ini = c_up0_ini
-        self.c_up1_ini = c_up1_ini
-        self.c_down0_ini = c_down0_ini
-        self.c_down1_ini = c_down1_ini
-        self.max_iter = max_iter
-
-    def optimize_up(self, outliers=None, verbose=0):
-        if outliers is not None:
-            self.num_outlier = outliers
-        c_up0 = self.c_up0_ini
-        c_up1 = self.c_up1_ini
-        f0 = (
-            np.count_nonzero(
-                self.yTrain
-                >= self.output_mean.numpy().flatten()
-                + c_up0 * self.output_up.numpy().flatten()
-            )
-            - self.num_outlier
-        )
-        f1 = (
-            np.count_nonzero(
-                self.yTrain
-                >= self.output_mean.numpy().flatten()
-                + c_up1 * self.output_up.numpy().flatten()
-            )
-            - self.num_outlier
-        )
-
-        iter = 0
-        while iter <= self.max_iter and f0 != 0 and f1 != 0:
-            c_up2 = (c_up0 + c_up1) / 2.0
-            f2 = (
-                np.count_nonzero(
-                    self.yTrain
-                    >= self.output_mean.numpy().flatten()
-                    + c_up2 * self.output_up.numpy().flatten()
-                )
-                - self.num_outlier
-            )
-            if f2 == 0:
-                break
-            elif f2 > 0:
-                c_up0 = c_up2
-                f0 = f2
-            else:
-                c_up1 = c_up2
-                f1 = f2
-            iter += 1
-            if verbose > 1:
-                print("{}, f0: {}, f1: {}, f2: {}".format(iter, f0, f1, f2))
-                print("c_up0: {}, c_up1: {}, c_up2: {}".format(c_up0, c_up1, c_up2))
-        if verbose > 0:
-            print("f0 : {}".format(f0))
-            print("f1 : {}".format(f1))
-
-        c_up = c_up2
-        return c_up
-
-    def optimize_down(self, outliers=None, verbose=0):
-        if outliers is not None:
-            self.num_outlier = outliers
-        c_down0 = self.c_down0_ini
-        c_down1 = self.c_down1_ini
-        f0 = (
-            np.count_nonzero(
-                self.yTrain
-                <= self.output_mean.numpy().flatten()
-                - c_down0 * self.output_down.numpy().flatten()
-            )
-            - self.num_outlier
-        )
-        f1 = (
-            np.count_nonzero(
-                self.yTrain
-                <= self.output_mean.numpy().flatten()
-                - c_down1 * self.output_down.numpy().flatten()
-            )
-            - self.num_outlier
-        )
-
-        iter = 0
-        while iter <= self.max_iter and f0 != 0 and f1 != 0:
-            c_down2 = (c_down0 + c_down1) / 2.0
-            f2 = (
-                np.count_nonzero(
-                    self.yTrain
-                    <= self.output_mean.numpy().flatten()
-                    - c_down2 * self.output_down.numpy().flatten()
-                )
-                - self.num_outlier
-            )
-            if f2 == 0:
-                break
-            elif f2 > 0:
-                c_down0 = c_down2
-                f0 = f2
-            else:
-                c_down1 = c_down2
-                f1 = f2
-            iter += 1
-            if verbose > 1:
-                print("{}, f0: {}, f1: {}, f2: {}".format(iter, f0, f1, f2))
-                print(
-                    "c_down0: {}, c_down1: {}, c_down2: {}".format(
-                        c_down0, c_down1, c_down2
-                    )
-                )
-        if verbose > 0:
-            print("f0 : {}".format(f0))
-            print("f1 : {}".format(f1))
-
-        c_down = c_down2
-        return c_down
-
-
 def main():
     matplotlib.use("TkAgg")
 
@@ -844,14 +485,10 @@ def main():
 
     configs = {}
     ### Some other general input info
-    configs["data_name"] = "bostonHousing"
     configs["quantile"] = (
         args.quantile
     )  # # target percentile for optimization step# target percentile for optimization step,
     # 0.95 by default if not specified
-    configs["split_seed"] = "WhatIsThis?"
-    configs["experiment_id"] = 1
-    configs["verbose"] = 1
 
     ######################################################################################
     # TODO: Re-Implement this
@@ -859,22 +496,12 @@ def main():
     # configs['quantile_list'] = np.arange(0.05, 1.00, 0.05) # 0.05-0.95
     ######################################################################################
 
-    print("--- Running on manual mode.")
     ### specify hypar-parameters for the training
     configs["seed"] = 10  # general random seed
     configs["num_neurons_mean"] = [50]  # hidden layer(s) for the 'MEAN' network
     configs["num_neurons_up"] = [50]  # hidden layer(s) for the 'UP' network
     configs["num_neurons_down"] = [50]  # hidden layer(s) for the 'DOWN' network
     configs["Max_iter"] = 5000  # 5000,
-    configs["lr"] = [0.02, 0.02, 0.02]  # 0.02         # learning rate
-    configs["optimizers"] = ["Adam", "Adam", "Adam"]  # ['SGD', 'SGD', 'SGD'],
-    configs["exponential_decay"] = True
-    configs["decay_steps"] = 3000  # 3000  # 10
-    configs["decay_rate"] = 0.9  # 0.6
-    configs["early_stop"] = True
-    configs["early_stop_start_iter"] = 100  # 60
-    configs["wait_patience"] = 300
-    print("--- Dataset: {}".format(configs["data_name"]))
     random.seed(configs["seed"])
     np.random.seed(configs["seed"])
     torch.manual_seed(configs["seed"])
@@ -884,31 +511,35 @@ def main():
     net_up = UQ_Net_std(configs, num_inputs, num_outputs, net="up")
     net_down = UQ_Net_std(configs, num_inputs, num_outputs, net="down")
 
-    # ''' Initialize trainer and conduct training/optimizations '''
+    # Initialize trainer and conduct training/optimizations
     trainer = CL_trainer(
         configs,
         net_mean,
         net_up,
         net_down,
-        xTrain,
-        yTrain,
-        xValid=xValid,
-        yValid=yValid,
-        xTest=xTest,
-        yTest=yTest,
+        x_train=xTrain,
+        y_train=yTrain,
+        x_valid=xValid,
+        y_valid=yValid,
+        x_test=xTest,
+        y_test=yTest,
     )
     trainer.train()  # training for 3 networks
-    c_up, c_down = trainer.boundaryOptimization(configs["quantile"], verbose=1)
+
+    c_up, c_down = compute_boundary_factors(
+        y_train=yTrain.numpy(),
+        network_preds=trainer.eval_networks(xTrain, as_numpy=True),
+        quantile=configs["quantile"],
+        verbose=1,
+    )
 
     pred_train = trainer.eval_networks(xTrain)
     pred_valid = trainer.eval_networks(xValid)
     pred_test = trainer.eval_networks(xTest)
 
-    pic = PredictionIntervalComputer(pred_train, pred_valid, pred_test)
-    pic.capsCalculation(
-        c_up, c_down, yTrain.numpy(), yValid.numpy(), yTest.numpy(), verbose=1
-    )
-    # pic.saveResultsToTxt()
+    PICP_train, MPIW_train = caps_calculation(pred_train, c_up, c_down, yTrain.numpy())
+    PICP_valid, MPIW_valid = caps_calculation(pred_valid, c_up, c_down, yValid.numpy())
+    PICP_test, MPIW_test = caps_calculation(pred_test, c_up, c_down, yTest.numpy())
 
     fig, ax = plt.subplots()
     ax.plot(xTrain, yTrain, ".")
