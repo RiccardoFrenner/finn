@@ -8,53 +8,11 @@ from typing import Any, Literal
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 from sklearn.metrics import r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-
-
-class CL_plotter:
-    def __init__(self):
-        pass
-
-    def plotTrainValidationLoss(
-        self,
-        train_loss,
-        valid_loss,
-        test_loss=None,
-        trainPlotLabel=None,
-        validPlotLabel=None,
-        testPlotLabel=None,
-        xlabel="",
-        ylabel="",
-        title="",
-        gridOn=False,
-        legendOn=True,
-        xlim=None,
-        ylim=None,
-        saveFigPath=None,
-    ):
-        iter_arr = np.arange(len(train_loss))
-        plt.plot(iter_arr, valid_loss, label=validPlotLabel)
-        plt.xlabel(xlabel)
-        plt.ylabel(ylabel)
-        plt.title(title)
-        if gridOn is True:
-            plt.grid()
-        if legendOn is True:
-            plt.legend()
-        if xlim is not None:
-            plt.xlim(xlim)
-        if ylim is not None:
-            plt.ylim(ylim)
-        if saveFigPath is not None:
-            plt.savefig(saveFigPath)
-            plt.clf()
-        if saveFigPath is None:
-            plt.show()
 
 
 class CL_dataLoader:
@@ -110,6 +68,24 @@ class TrainingData:
     y_test: Any
 
 
+def create_PI_training_data(
+    mean_network, X, Y
+) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+    """Generate up and down training data"""
+    with torch.no_grad():
+        diff_train = Y.reshape(Y.shape[0], -1) - mean_network(X)
+        up_idx = diff_train > 0
+        down_idx = diff_train < 0
+
+        X_up = X[up_idx.flatten()]
+        Y_up = diff_train[up_idx].unsqueeze(1)
+
+        X_down = X[down_idx.flatten()]
+        Y_down = -1.0 * diff_train[down_idx].unsqueeze(1)
+
+    return ((X_up, Y_up), (X_down, Y_down))
+
+
 class CL_trainer:
     def __init__(
         self,
@@ -137,7 +113,6 @@ class CL_trainer:
         self.training_data = TrainingData(xTrain, yTrain, xValid, yValid, xTest, yTest)
 
         self.trainSteps = CL_UQ_Net_train_steps(self.networks)
-        self.plotter = CL_plotter()
         self.training_statistics = {
             k: TrainingStatistics() for k in self.networks.keys()
         }
@@ -215,22 +190,7 @@ class CL_trainer:
                 )
                 break
 
-
     def train(self):
-        results_path = (
-            "./Results_PI3NN/" + self.configs["data_name"] + "_PI3NN_results.txt"
-        )
-        with open(results_path, "a") as fwrite:
-            fwrite.write(
-                "EXP "
-                + "random_seed "
-                + "PICP_test "
-                + "MPIW_test "
-                + "RMSE "
-                + "R2"
-                + "\n"
-            )
-
         self.main_train_step(
             network_type="mean",
             training_data=self.training_data,
@@ -256,32 +216,13 @@ class CL_trainer:
         xValid = self.training_data.x_valid
         yTrain = self.training_data.y_train
         yValid = self.training_data.y_valid
-        with torch.no_grad():  # No need to track gradients for this
-            diff_train = yTrain.reshape(yTrain.shape[0], -1) - self.trainSteps.networks[
-                "mean"
-            ](xTrain)
-            up_idx = diff_train > 0
-            down_idx = diff_train < 0
 
-            xTrain_up = xTrain[up_idx.flatten()]
-            yTrain_up = diff_train[up_idx].unsqueeze(
-                1
-            )  # Unsqueeze for single-element dim
-
-            xTrain_down = xTrain[down_idx.flatten()]
-            yTrain_down = -1.0 * diff_train[down_idx].unsqueeze(1)
-
-            diff_valid = yValid.reshape(yValid.shape[0], -1) - self.trainSteps.networks[
-                "mean"
-            ](xValid)
-            up_idx = diff_valid > 0
-            down_idx = diff_valid < 0
-
-            xValid_up = xValid[up_idx.flatten()]
-            yValid_up = diff_valid[up_idx].unsqueeze(1)
-
-            xValid_down = xValid[down_idx.flatten()]
-            yValid_down = -1.0 * diff_valid[down_idx].unsqueeze(1)
+        (xTrain_up, yTrain_up), (xTrain_down, yTrain_down) = create_PI_training_data(
+            mean_network=self.trainSteps.networks["mean"], X=xTrain, Y=yTrain
+        )
+        (xValid_up, yValid_up), (xValid_down, yValid_down) = create_PI_training_data(
+            mean_network=self.trainSteps.networks["mean"], X=xValid, Y=yValid
+        )
 
         return (
             TrainingData(xTrain_up, yTrain_up, xValid_up, yValid_up, None, None),
