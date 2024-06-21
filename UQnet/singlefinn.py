@@ -1,11 +1,10 @@
-import os
 import sys
 
 sys.path.append("../../../../finn/UQnet")
 sys.path.append("../../oldfinn/python/diffusion_sorption/synthetic_data/")
 
-import shutil
 import time
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,28 +18,33 @@ from torchdiffeq import odeint
 print(tp3)
 
 
+class AnalyticRetardation:
+    @staticmethod
+    def linear(u, por, rho_s, Kd):
+        factor = 1 + (1 - por) / por * rho_s * Kd
+        ones_like_u = u * 0 + 1
+        return ones_like_u * factor
+
+    @staticmethod
+    def freundlich(u, por, rho_s, Kf, nf):
+        return 1 + (1 - por) / por * rho_s * Kf * nf * (u + 1e-6) ** (nf - 1)
+
+    @staticmethod
+    def langmuir(u, por, rho_s, smax, Kl):
+        return 1 + (1 - por) / por * rho_s * smax * Kl / ((u + Kl) ** 2)
+
+
 class Initialize:
     def __init__(self):
         """
         Constructor
 
         """
+        self.model_name: str = params.model_name
+        self.main_path = Path().cwd()
+        self.model_path = self.main_path / self.model_name
+        self.model_path.mkdir(exist_ok=True, parents=True)
 
-        # SET WORKING PATH
-        self.main_path = os.getcwd()
-
-        # MODEL NAME & SETTING
-        self.model_name = params.model_name
-
-        self.model_path = self.main_path + "/" + self.model_name
-        self.check_dir(self.model_path)
-
-        self.log_path = self.main_path + "/runs/" + self.model_name
-        # Remove old log files to prevent unclear visualization in tensorboard
-        self.check_dir(self.log_path, remove=True)
-
-        self.save_model = params.save_model
-        self.continue_training = params.continue_training
         self.device_name = params.device_name
         self.device = self.determine_device()
 
@@ -49,7 +53,6 @@ class Initialize:
         self.state_layers = params.state_layers
         self.flux_nodes = params.flux_nodes
         self.state_nodes = params.state_nodes
-        self.learning_rate = params.learning_rate
         self.error_mult = params.error_mult
         self.breakthrough_mult = params.breakthrough_mult
         self.profile_mult = params.profile_mult
@@ -150,27 +153,6 @@ class Initialize:
             print()
 
         return self.device
-
-    def check_dir(self, path_dir, remove=False):
-        """
-        This function evaluates whether a directory for the corresponding model
-        exists, otherwise create a new directory
-
-        Inputs:
-            path_dir    : the path to the corresponding directory
-            remove      : a Boolean value to determine whether to delete pre-
-                            existing directory
-        """
-
-        # For tensorboard log files, clean the directory to avoid error in
-        # visualization
-        if remove:
-            if os.path.exists(path_dir):
-                shutil.rmtree(path_dir)
-
-        # If the path does not exist, create a new path
-        if not os.path.exists(path_dir):
-            os.makedirs(path_dir)
 
 
 class Evaluate:
@@ -285,12 +267,7 @@ class Evaluate:
         plt.xlabel("time [days]", fontsize=16)
         plt.ylabel("Tailwater concentration [mg/L]", fontsize=16)
         plt.tight_layout()
-
-        # Save plot if required
-        if cfg.save_model:
-            plt.savefig(
-                cfg.model_path + "/" + cfg.model_name + "_breakthrough_curve.png"
-            )
+        plt.savefig(cfg.model_path / f"{cfg.model_name}_breakthrough_curve.png")
 
     def plot_full_field(self, cfg, pred, data, diss):
         """
@@ -328,268 +305,153 @@ class Evaluate:
         plt.ylabel("time [days]", fontsize=16)
         plt.colorbar()
         plt.clim([0, torch.max(data)])
-
         plt.tight_layout()
+        plt.savefig(cfg.model_path / f"{cfg.model_name}_c_{save_name}.png")
 
-        if cfg.save_model:
-            plt.savefig(
-                cfg.model_path + "/" + cfg.model_name + "_c_" + save_name + ".png"
+
+def train(model: nn.Module, u0, t, x_train):
+    """_summary_
+
+    Args:
+        model (nn.Module): model to be trained on training data
+        u0 (tensor): initial condition, dim: [num_features, Nx]
+        t (tensor): time steps for integration, dim: [Nt,]
+        x_train (tensor): full field solution at each time step, dim: [Nt, num_features, Nx]
+    """
+    optimizer = torch.optim.LBFGS(model.parameters(), lr=0.1)
+    # TODO: Just a reminder
+    # u = torch.linspace(0.01, 1.00, 100)
+
+
+    # Define the closure function that consists of resetting the
+    # gradient buffer, loss function calculation, and backpropagation
+    # The closure function is necessary for LBFGS optimizer, because
+    # it requires multiple function evaluations
+    # The closure function returns the loss value
+    def closure():
+        model.train()
+        optimizer.zero_grad()
+        ode_pred = odeint(
+            model,
+            u0.to(cfg.device),
+            t.to(cfg.device),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+        # If trained only using breakthrough curve data calculate the
+        # predicted breakthrough, else use the whole ode_pred values
+        if cfg.train_breakthrough:
+            # Extract the breakthrough curve prediction and data
+            cauchy_mult = (
+                model.flux_modules[0].cauchy_mult
+                * model.flux_modules[0].D_eff
+            )
+            pred_breakthrough = (
+                (ode_pred[:, 0, -2] - ode_pred[:, 0, -1]) * cauchy_mult
+            ).squeeze()
+            data_breakthrough = data[:, 0, -1].squeeze()
+
+            # Calculate loss based on the breakthrough curve prediction and data
+            loss = cfg.breakthrough_mult * torch.sum(
+                (data_breakthrough.to(cfg.device) - pred_breakthrough) ** 2
             )
 
+            # Extract the total concentration profile at t_end
+            pred_profile = ode_pred[-1, 1].squeeze()
+            data_profile = data[-1, 1].squeeze()
 
-class Training:
-    def __init__(self, model: nn.Module, cfg):
-        """
-        Constructor
-
-        Inputs:
-            model   : the model object constructed using the Net_Model class
-            cfg     : the configuration object containing the model settings
-
-        """
-
-        self.cfg = cfg
-
-        # Send model to the corresponding device (important when using GPU)
-        self.model = model.to(self.cfg.device)
-
-        # Choose between ADAM or LBFGS as the optimizer
-        # LBFGS theoretically should work better compared to ADAM, but the
-        # memory requirement and computation time is also higher
-
-        if self.cfg.lbfgs_optim:
-            self.optimizer = torch.optim.LBFGS(
-                model.parameters(), lr=self.cfg.learning_rate
+            # Calculate the loss based on the concentration profile prediction and data
+            loss += cfg.profile_mult * torch.sum(
+                (data_profile.to(cfg.device) - pred_profile) ** 2
             )
+
         else:
-            self.optimizer = torch.optim.Adam(
-                model.parameters(), lr=self.cfg.learning_rate
+            # Calculate loss using the sum squared error metric
+            loss = cfg.error_mult * torch.sum(
+                (data.to(cfg.device) - ode_pred) ** 2
             )
 
-        # Initialize the initial epoch value, an empty list to store the training
-        # loss values, and set initial best loss value as infinity, to be updated
-        # after each iteration
-        self.start_epoch = 0
-        self.train_loss = []
-        self.best_loss = np.infty
+        # Extract the predicted retardation factor function for physical
+        # regularization
+        u = torch.linspace(0.0, 1.0, 100).view(-1, 1).to(cfg.device)
+        ret_temp = model.flux_modules[0].coeff_nn(u)
 
-        # Define the filename to save and/or load the model
-        self.model_save_file = self.cfg.model_path + "/" + self.cfg.model_name + ".pt"
-
-        # Load the model if this instance is a training continuation from a
-        # previous checkpoint
-        if self.cfg.continue_training:
-            print("Restoring model (that is the network's weights) from file...")
-            print()
-
-            # Load the latest checkpoint
-            self.checkpoint = torch.load(self.model_save_file)
-
-            # Load the model state_dict (all the network parameters) and send
-            # the model to the corresponding device
-            self.model.load_state_dict(self.checkpoint["state_dict"])
-            self.model.to(self.cfg.device)
-
-            # Load the optimizer state dict (important because ADAM and LBFGS
-            # requires past states, e.g. momentum information and approximate
-            # Hessian)
-            self.optimizer.load_state_dict(self.checkpoint["optimizer"])
-            for state in self.optimizer.state.values():
-                for k, v in state.items():
-                    if isinstance(v, torch.Tensor):
-                        state[k] = v.to(self.cfg.device)
-
-            # Load the epoch and loss values from the previous training up until
-            # the checkpoint to enable complete history of the training
-            self.start_epoch = self.checkpoint["epoch"]
-            self.train_loss = self.checkpoint["loss_train"]
-
-        # Calculate the "true" retardation factor based on the specified correlation
-        # for plotting purposes to be compared with the approximation
-        u = torch.linspace(0.01, 1.00, 100)
-        self.retardation_linear = torch.cat(
-            len(u)
-            * [
-                torch.tensor(
-                    1 + (1 - self.cfg.por) / self.cfg.por * self.cfg.rho_s * self.cfg.Kd
-                ).unsqueeze(0)
-            ]
-        )
-        self.retardation_freundlich = 1 + (
-            1 - self.cfg.por
-        ) / self.cfg.por * self.cfg.rho_s * self.cfg.Kf * self.cfg.nf * (u + 1e-6) ** (
-            self.cfg.nf - 1
-        )
-        self.retardation_langmuir = 1 + (
-            1 - self.cfg.por
-        ) / self.cfg.por * self.cfg.rho_s * self.cfg.smax * self.cfg.Kl / (
-            (u + self.cfg.Kl) ** 2
+        # Physical regularization: value of the retardation factor should
+        # decrease with increasing concentration
+        loss += cfg.phys_mult * torch.sum(
+            torch.relu(ret_temp[:-1] - ret_temp[1:])
         )
 
-    def model_train(self, u0, t, data):
-        """
-        This function trains the model
+        # Backpropagate to obtain gradient of model parameters
+        loss.backward()
 
-        Inputs:
-            u0      : initial condition, dim: [num_features, Nx, Ny]
-            t       : time (a torch.tensor array containing all values of time steps
-                        in which the output of the model will be calculated and
-                        recorded)
-            data    : training data (full field solution with the same shape as u0),
-                        dim: [num_features, Nx, Ny]
+        return loss
 
-        """
+    # Plot the predicted retardation factor as a function of dissolved
+    # concentration and update at each training epoch
+    fig, ax = plt.subplots()
+    u = torch.linspace(0.01, 1.00, 100).view(-1, 1).to(cfg.device)
+    plt.plot(u.cpu(), retardation_linear, linestyle="--", label="Linear")
+    plt.plot(
+        u.cpu(), retardation_freundlich, linestyle="--", label="Freundlich"
+    )
+    plt.plot(u.cpu(), retardation_langmuir, linestyle="--", label="Langmuir")
+    ret_pred = (
+        1
+        / model.flux_modules[0].coeff_nn(u)
+        / 10 ** model.flux_modules[0].p_exp
+    )
+    (ax_pred,) = ax.plot(u.cpu(), ret_pred.cpu().detach(), label="FINN")
+    plt.title("Predicted Retardation Factor", fontsize=16)
+    plt.xlabel(r"$c_{diss}$ [mg/L]", fontsize=16)
+    plt.ylabel(r"$R$", fontsize=16)
+    plt.legend(fontsize=16)
+    plt.tight_layout()
 
-        # Define the closure function that consists of resetting the
-        # gradient buffer, loss function calculation, and backpropagation
-        # The closure function is necessary for LBFGS optimizer, because
-        # it requires multiple function evaluations
-        # The closure function returns the loss value
-        def closure():
-            # Set the model to training mode
-            self.model.train()
+    # Iterate until maximum epoch number is reached
+    for epoch in range(start_epoch, cfg.epochs):
+        a = time.time()
 
-            # Reset the gradient buffer (set to 0)
-            self.optimizer.zero_grad()
+        # Update the model parameters and record the loss value
+        optimizer.step(closure)
+        loss = closure()
+        train_loss.append(loss.item())
 
-            # Calculate the model prediction (full field solution)
-            ode_pred = odeint(
-                self.model,
-                u0.to(self.cfg.device),
-                t.to(self.cfg.device),
-                rtol=1e-5,
-                atol=1e-6,
-            )
+        b = time.time()
 
-            # If trained only using breakthrough curve data calculate the
-            # predicted breakthrough, else use the whole ode_pred values
-            if self.cfg.train_breakthrough:
-                # Extract the breakthrough curve prediction and data
-                cauchy_mult = (
-                    self.model.flux_modules[0].cauchy_mult
-                    * self.model.flux_modules[0].D_eff
-                )
-                pred_breakthrough = (
-                    (ode_pred[:, 0, -2] - ode_pred[:, 0, -1]) * cauchy_mult
-                ).squeeze()
-                data_breakthrough = data[:, 0, -1].squeeze()
-
-                # Calculate loss based on the breakthrough curve prediction and data
-                loss = self.cfg.breakthrough_mult * torch.sum(
-                    (data_breakthrough.to(self.cfg.device) - pred_breakthrough) ** 2
-                )
-
-                # Extract the total concentration profile at t_end
-                pred_profile = ode_pred[-1, 1].squeeze()
-                data_profile = data[-1, 1].squeeze()
-
-                # Calculate the loss based on the concentration profile prediction and data
-                loss += self.cfg.profile_mult * torch.sum(
-                    (data_profile.to(self.cfg.device) - pred_profile) ** 2
-                )
-
-            else:
-                # Calculate loss using the sum squared error metric
-                loss = self.cfg.error_mult * torch.sum(
-                    (data.to(self.cfg.device) - ode_pred) ** 2
-                )
-
-            # Extract the predicted retardation factor function for physical
-            # regularization
-            u = torch.linspace(0.0, 1.0, 100).view(-1, 1).to(self.cfg.device)
-            ret_temp = self.model.flux_modules[0].coeff_nn(u)
-
-            # Physical regularization: value of the retardation factor should
-            # decrease with increasing concentration
-            loss += self.cfg.phys_mult * torch.sum(
-                torch.relu(ret_temp[:-1] - ret_temp[1:])
-            )
-
-            # Backpropagate to obtain gradient of model parameters
-            loss.backward()
-
-            return loss
-
-        # Plot the predicted retardation factor as a function of dissolved
-        # concentration and update at each training epoch
-        fig, ax = plt.subplots()
-        u = torch.linspace(0.01, 1.00, 100).view(-1, 1).to(self.cfg.device)
-        plt.plot(u.cpu(), self.retardation_linear, linestyle="--", label="Linear")
-        plt.plot(
-            u.cpu(), self.retardation_freundlich, linestyle="--", label="Freundlich"
+        print(
+            f"Training: Epoch [{epoch + 1}/{cfg.epochs}], "
+            f"Training Loss: {train_loss[-1]:.4f}, Runtime: {b - a:.4f} secs"
         )
-        plt.plot(u.cpu(), self.retardation_langmuir, linestyle="--", label="Langmuir")
+
+        # Update the retardation factor plot
         ret_pred = (
             1
-            / self.model.flux_modules[0].coeff_nn(u)
-            / 10 ** self.model.flux_modules[0].p_exp
-        )
-        (ax_pred,) = ax.plot(u.cpu(), ret_pred.cpu().detach(), label="FINN")
-        plt.title("Predicted Retardation Factor", fontsize=16)
-        plt.xlabel(r"$c_{diss}$ [mg/L]", fontsize=16)
-        plt.ylabel(r"$R$", fontsize=16)
-        plt.legend(fontsize=16)
-        plt.tight_layout()
-
-        # Iterate until maximum epoch number is reached
-        for epoch in range(self.start_epoch, self.cfg.epochs):
-            # Start timer
-            a = time.time()
-
-            # Update the model parameters and record the loss value
-            self.optimizer.step(closure)
-            loss = closure()
-            self.train_loss.append(loss.item())
-
-            # Stop the timer
-            b = time.time()
-
-            # Print out the epoch status
-            print(
-                "Training: Epoch [%d/%d], Training Loss: %.4f, Runtime: %.4f secs"
-                % (epoch + 1, self.cfg.epochs, self.train_loss[-1], b - a)
-            )
-
-            # Update the retardation factor plot
-            ret_pred = (
-                1
-                / self.model.flux_modules[0].coeff_nn(u)
-                / 10 ** self.model.flux_modules[0].p_exp
-            )
-            ax_pred.set_ydata(ret_pred.cpu().detach())
-            ax.relim()
-            ax.autoscale_view()
-            plt.draw()
-            plt.pause(0.0001)
-            plt.savefig(
-                self.cfg.model_path
-                + "/"
-                + self.cfg.model_name
-                + f"_retardation_{epoch}.png"
-            )
-
-        # Load model from the latest saved checkpoint (i.e. with the lowest
-        # training error)
-        if self.cfg.save_model:
-            self.checkpoint = torch.load(self.model_save_file)
-            self.model.load_state_dict(self.checkpoint["state_dict"])
-            self.model.to(self.cfg.device)
-
-        # Plot the retardation factor and save if required
-        ret_pred = (
-            1
-            / self.model.flux_modules[0].coeff_nn(u)
-            / 10 ** self.model.flux_modules[0].p_exp
+            / model.flux_modules[0].coeff_nn(u)
+            / 10 ** model.flux_modules[0].p_exp
         )
         ax_pred.set_ydata(ret_pred.cpu().detach())
         ax.relim()
         ax.autoscale_view()
         plt.draw()
         plt.pause(0.0001)
-        if self.cfg.save_model:
-            plt.savefig(
-                self.cfg.model_path + "/" + self.cfg.model_name + "_retardation.png"
-            )
+        plt.savefig(
+            cfg.model_path / f"{cfg.model_name}_retardation_{epoch}.png"
+        )
+
+    # Plot the retardation factor and save if required
+    ret_pred = (
+        1
+        / model.flux_modules[0].coeff_nn(u)
+        / 10 ** model.flux_modules[0].p_exp
+    )
+    ax_pred.set_ydata(ret_pred.cpu().detach())
+    ax.relim()
+    ax.autoscale_view()
+    plt.draw()
+    plt.pause(0.0001)
+    plt.savefig(cfg.model_path / f"{cfg.model_name}_retardation.png")
 
 
 # Initialization of configurations and set modules for different core samples
@@ -610,13 +472,10 @@ class Flux_Kernels(nn.Module):
 
         super(Flux_Kernels, self).__init__()
 
-        # Extracting the spatial dimension and initial condition of the problem
-        # and store the initial condition value u0
         self.Nx = u0.size(0)
         self.Ny = u0.size(1)
         self.u0 = u0
 
-        # Set the device where training of the model takes place
         self.device = cfg.device
 
         # Variables that act as switch to use different types of boundary
@@ -1031,16 +890,11 @@ class Net_Model(nn.Module):
 
         super(Net_Model, self).__init__()
 
-        # Initialize the flux and state kernels as an empty module list
         self.flux_modules = nn.ModuleList()
-
-        # Extract information of number of variables to be calculated
         self.num_vars = u0.size(0)
-
-        # Extract configuration information
         self.cfg = cfg
 
-        # Create flux and state kernel for each variable to be calculated
+        # Create flux kernel for each variable to be calculated
         for var_idx in range(self.num_vars):
             self.flux_modules.append(Flux_Kernels(u0[var_idx], self.cfg, var_idx))
 
@@ -1057,8 +911,6 @@ class Net_Model(nn.Module):
             du  : the time derivative of u (du/dt), dim: [num_features, Nx, Ny]
 
         """
-
-        # Initialize the flux and state kernel outputs in empty lists
         flux = []
 
         # Use flux and state kernels to calculate du/dt for all unknown variables
@@ -1071,7 +923,6 @@ class Net_Model(nn.Module):
                 )
             )
 
-        # Convert the state list into a torch.tensor type
         du = torch.stack(flux)
 
         return du
@@ -1108,7 +959,6 @@ def load_data(is_testing: bool = False):
 
 
 def main():
-    # Initialize the model to be trained
     u0 = torch.zeros(cfg.num_vars, cfg.Nx, 1)
     model = Net_Model(u0, cfg)
 
