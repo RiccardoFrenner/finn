@@ -6,7 +6,6 @@ sys.path.append("../../oldfinn/python/diffusion_sorption/synthetic_data/")
 import time
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import syn00_config as params
@@ -46,7 +45,7 @@ class Initialize:
         self.model_path.mkdir(exist_ok=True, parents=True)
 
         self.device_name = params.device_name
-        self.device = self.determine_device()
+        self.device = torch.device("cpu")
 
         # NETWORK HYPER-PARAMETERS
         self.flux_layers = params.flux_layers
@@ -126,336 +125,6 @@ class Initialize:
         self.p_exp_state = params.p_exp_state
         ## Set the variable indices necessary to calculate the reaction function
         self.state_couple_idx = params.state_couple_idx
-
-    def determine_device(self):
-        """
-        This function evaluates whether a GPU is accessible at the system and
-        returns it as device to calculate on, otherwise it returns the CPU.
-        :return: The device where tensor calculations shall be made on
-        """
-
-        self.device = torch.device(self.device_name)
-        if not torch.cuda.is_available():
-            self.device = torch.device("cpu")
-        print("Using device:", self.device)
-        print()
-
-        # Additional Info when using cuda
-        if self.device.type == "cuda" and torch.cuda.is_available():
-            print(torch.cuda.get_device_name(0))
-            print("Memory Usage:")
-            print(
-                "\tAllocated:", round(torch.cuda.memory_allocated(0) / 1024**3, 1), "GB"
-            )
-            print(
-                "\tCached:   ", round(torch.cuda.memory_reserved(0) / 1024**3, 1), "GB"
-            )
-            print()
-
-        return self.device
-
-
-class Evaluate:
-    def __init__(self, x, t, data):
-        """
-        Constructor
-
-        Inputs:
-            x       : the spatial coordinates of the data and model prediction
-            t       : time (a torch.tensor array containing all values of time steps
-                        in which the output of the model will be calculated and
-                        recorded)
-            data    : test data
-
-        """
-
-        self.x = x
-        self.t = t
-        self.data = data
-
-    def evaluate(self, cfg, model, u0, unseen):
-        """
-        This function is the main function for postprocessing. It calculates
-        the test prediction, compare it with the test data, and plot the results
-
-        Inputs:
-            params  : the configuration object containing the model settings
-            model   : the trained model
-            u0      : initial condition values, dim: [num_features, Nx, Ny]
-            unseen  : a Boolean value to determine whether this object is the
-                        extrapolated training case or the unseen test case
-
-        """
-
-        # Set the model to evaluation mode
-        model.eval()
-
-        # Calculate prediction using the trained model
-        self.ode_pred = odeint(
-            model, u0.to(cfg.device), self.t.to(cfg.device), rtol=1e-5, atol=1e-6
-        )
-
-        # Calculate MSE of the FINN prediction
-        self.mse_test = torch.mean(
-            (self.data.to(cfg.device) - self.ode_pred) ** 2
-        ).item()
-
-        # Extract the breakthrough curve prediction
-        self.pred_breakthrough = self.ode_pred[:, 0, -1].squeeze()
-
-        # Plot breakthrough curve if this object is the extrapolated training case
-        if not unseen:
-            self.plot_breakthrough_sep(cfg)
-
-        # Plot the full field solution of both dissolved and total concentration
-        self.plot_full_field(
-            cfg, self.ode_pred[:, 0].squeeze(), self.data[:, 0].squeeze(), True
-        )
-        self.plot_full_field(
-            cfg, self.ode_pred[:, 1].squeeze(), self.data[:, 1].squeeze(), False
-        )
-
-    def plot_breakthrough_sep(self, cfg):
-        """
-        This function plots the predicted breakthrough curve in comparison
-        to the data
-
-        Input:
-            cfg : the configuration object containing the model settings
-
-        """
-
-        plt.figure()
-        plt.plot(self.t, self.data[:, 0, -1].squeeze(), label="Data")
-
-        # Determine index of the prediction to be plotted (so that the scatter
-        # plot marker is sparse and visualization is better)
-        train_plot_idx = torch.arange(1, 501, 50)
-        test_plot_idx = torch.arange(501, 2001, 50)
-
-        # Plot the predicted breakthrough curve, with different color for
-        # training and the extrapolation
-        plt.scatter(
-            self.t[train_plot_idx],
-            self.pred_breakthrough[train_plot_idx].cpu().detach(),
-            label="Training",
-            color="green",
-            marker="x",
-        )
-        plt.scatter(
-            self.t[test_plot_idx],
-            self.pred_breakthrough[test_plot_idx].cpu().detach(),
-            label="Testing",
-            color="red",
-            marker="x",
-        )
-        plt.legend(fontsize=16)
-
-        # Plot a black vertical line as separator between training and extrapolation
-        sep_t = torch.cat(2 * [torch.tensor(self.t[501]).unsqueeze(0)])
-        sep_y = torch.tensor([0.0, 1.1 * torch.max(self.data[:, 0, -1])])
-        plt.plot(sep_t, sep_y, color="black")
-
-        # Determine caption depending on which isotherm is being used
-        if cfg.linear:
-            caption = "Linear"
-        elif cfg.freundlich:
-            caption = "Freundlich"
-        elif cfg.langmuir:
-            caption = "Langmuir"
-        plt.title("Breakthrough Curve (" + caption + " Sorption)", fontsize=16)
-        plt.xlabel("time [days]", fontsize=16)
-        plt.ylabel("Tailwater concentration [mg/L]", fontsize=16)
-        plt.tight_layout()
-        plt.savefig(cfg.model_path / f"{cfg.model_name}_breakthrough_curve.png")
-
-    def plot_full_field(self, cfg, pred, data, diss):
-        """
-        This function plots the full field solution of the model prediction in
-        comparison to the test data
-
-        Inputs:
-            cfg     : the configuration object containing the model settings
-            pred    : the model prediction
-            data    : test data
-            diss    : a Boolean value to determine whether this is a plot for
-                        the dissolved or total concentration
-
-        """
-
-        plt.figure(figsize=(10.0, 5.0))
-        plt.subplot(121)
-        plt.pcolormesh(self.x, self.t, data)
-        if diss:
-            caption = "Dissolved"
-            save_name = "diss"
-        else:
-            caption = "Total"
-            save_name = "tot"
-        plt.title(caption + " Concentration Data", fontsize=16)
-        plt.xlabel("Depth [m]", fontsize=16)
-        plt.ylabel("time [days]", fontsize=16)
-        plt.colorbar()
-        plt.clim([0, torch.max(data)])
-
-        plt.subplot(122)
-        plt.pcolormesh(self.x, self.t, pred.cpu().detach())
-        plt.title(caption + " Concentration Prediction", fontsize=16)
-        plt.xlabel("Depth [m]", fontsize=16)
-        plt.ylabel("time [days]", fontsize=16)
-        plt.colorbar()
-        plt.clim([0, torch.max(data)])
-        plt.tight_layout()
-        plt.savefig(cfg.model_path / f"{cfg.model_name}_c_{save_name}.png")
-
-
-def train(model: nn.Module, u0, t, x_train):
-    """_summary_
-
-    Args:
-        model (nn.Module): model to be trained on training data
-        u0 (tensor): initial condition, dim: [num_features, Nx]
-        t (tensor): time steps for integration, dim: [Nt,]
-        x_train (tensor): full field solution at each time step, dim: [Nt, num_features, Nx]
-    """
-    optimizer = torch.optim.LBFGS(model.parameters(), lr=0.1)
-    # TODO: Just a reminder
-    # u = torch.linspace(0.01, 1.00, 100)
-
-
-    # Define the closure function that consists of resetting the
-    # gradient buffer, loss function calculation, and backpropagation
-    # The closure function is necessary for LBFGS optimizer, because
-    # it requires multiple function evaluations
-    # The closure function returns the loss value
-    def closure():
-        model.train()
-        optimizer.zero_grad()
-        ode_pred = odeint(
-            model,
-            u0.to(cfg.device),
-            t.to(cfg.device),
-            rtol=1e-5,
-            atol=1e-6,
-        )
-
-        # If trained only using breakthrough curve data calculate the
-        # predicted breakthrough, else use the whole ode_pred values
-        if cfg.train_breakthrough:
-            # Extract the breakthrough curve prediction and data
-            cauchy_mult = (
-                model.flux_modules[0].cauchy_mult
-                * model.flux_modules[0].D_eff
-            )
-            pred_breakthrough = (
-                (ode_pred[:, 0, -2] - ode_pred[:, 0, -1]) * cauchy_mult
-            ).squeeze()
-            data_breakthrough = data[:, 0, -1].squeeze()
-
-            # Calculate loss based on the breakthrough curve prediction and data
-            loss = cfg.breakthrough_mult * torch.sum(
-                (data_breakthrough.to(cfg.device) - pred_breakthrough) ** 2
-            )
-
-            # Extract the total concentration profile at t_end
-            pred_profile = ode_pred[-1, 1].squeeze()
-            data_profile = data[-1, 1].squeeze()
-
-            # Calculate the loss based on the concentration profile prediction and data
-            loss += cfg.profile_mult * torch.sum(
-                (data_profile.to(cfg.device) - pred_profile) ** 2
-            )
-
-        else:
-            # Calculate loss using the sum squared error metric
-            loss = cfg.error_mult * torch.sum(
-                (data.to(cfg.device) - ode_pred) ** 2
-            )
-
-        # Extract the predicted retardation factor function for physical
-        # regularization
-        u = torch.linspace(0.0, 1.0, 100).view(-1, 1).to(cfg.device)
-        ret_temp = model.flux_modules[0].coeff_nn(u)
-
-        # Physical regularization: value of the retardation factor should
-        # decrease with increasing concentration
-        loss += cfg.phys_mult * torch.sum(
-            torch.relu(ret_temp[:-1] - ret_temp[1:])
-        )
-
-        # Backpropagate to obtain gradient of model parameters
-        loss.backward()
-
-        return loss
-
-    # Plot the predicted retardation factor as a function of dissolved
-    # concentration and update at each training epoch
-    fig, ax = plt.subplots()
-    u = torch.linspace(0.01, 1.00, 100).view(-1, 1).to(cfg.device)
-    plt.plot(u.cpu(), retardation_linear, linestyle="--", label="Linear")
-    plt.plot(
-        u.cpu(), retardation_freundlich, linestyle="--", label="Freundlich"
-    )
-    plt.plot(u.cpu(), retardation_langmuir, linestyle="--", label="Langmuir")
-    ret_pred = (
-        1
-        / model.flux_modules[0].coeff_nn(u)
-        / 10 ** model.flux_modules[0].p_exp
-    )
-    (ax_pred,) = ax.plot(u.cpu(), ret_pred.cpu().detach(), label="FINN")
-    plt.title("Predicted Retardation Factor", fontsize=16)
-    plt.xlabel(r"$c_{diss}$ [mg/L]", fontsize=16)
-    plt.ylabel(r"$R$", fontsize=16)
-    plt.legend(fontsize=16)
-    plt.tight_layout()
-
-    # Iterate until maximum epoch number is reached
-    for epoch in range(start_epoch, cfg.epochs):
-        a = time.time()
-
-        # Update the model parameters and record the loss value
-        optimizer.step(closure)
-        loss = closure()
-        train_loss.append(loss.item())
-
-        b = time.time()
-
-        print(
-            f"Training: Epoch [{epoch + 1}/{cfg.epochs}], "
-            f"Training Loss: {train_loss[-1]:.4f}, Runtime: {b - a:.4f} secs"
-        )
-
-        # Update the retardation factor plot
-        ret_pred = (
-            1
-            / model.flux_modules[0].coeff_nn(u)
-            / 10 ** model.flux_modules[0].p_exp
-        )
-        ax_pred.set_ydata(ret_pred.cpu().detach())
-        ax.relim()
-        ax.autoscale_view()
-        plt.draw()
-        plt.pause(0.0001)
-        plt.savefig(
-            cfg.model_path / f"{cfg.model_name}_retardation_{epoch}.png"
-        )
-
-    # Plot the retardation factor and save if required
-    ret_pred = (
-        1
-        / model.flux_modules[0].coeff_nn(u)
-        / 10 ** model.flux_modules[0].p_exp
-    )
-    ax_pred.set_ydata(ret_pred.cpu().detach())
-    ax.relim()
-    ax.autoscale_view()
-    plt.draw()
-    plt.pause(0.0001)
-    plt.savefig(cfg.model_path / f"{cfg.model_name}_retardation.png")
-
-
-# Initialization of configurations and set modules for different core samples
-cfg = Initialize()
 
 
 class Flux_Kernels(nn.Module):
@@ -878,17 +547,127 @@ class Coeff_NN(torch.nn.Module):
         return output
 
 
-class Net_Model(nn.Module):
+class ConcentrationPredictor(nn.Module):
+    def __init__(self, u0: torch.Tensor, cfg: Initialize):
+        """TODO: Docstring
+
+        Args:
+            u0 (tensor): initial condition, dim: [num_features, Nx]
+            cfg (_type_): _description_
+        """
+        super(ConcentrationPredictor, self).__init__()
+
+        self.cfg = cfg
+        self.u0 = u0
+        self.dudt_fun = ConcentrationChangeRatePredictor(u0, cfg)
+
+    def forward(self, t):
+        """Predict the concentration profile at given time steps from an initial condition using the FINN method.
+
+        Args:
+            t (tensor): time steps
+
+        Returns:
+            tensor: Full field solution of concentration at given time steps.
+        """
+
+        return odeint(self.dudt_fun, self.u0, t, rtol=1e-5, atol=1e-6)
+
+    def run_training(self, t: torch.Tensor, u_full_train: torch.Tensor):
+        """Train to predict the concentration from the given full field training data.
+
+        Args:
+
+            t (tensor): time steps for integration, dim: [Nt,]
+            x_train (tensor): full field solution at each time step, dim: [Nt, num_features, Nx]
+        """
+        out_dir = Path("data_out")
+        out_dir.mkdir(exist_ok=True, parents=True)
+
+        optimizer = torch.optim.LBFGS(self.parameters(), lr=0.1)
+
+        u_ret = torch.linspace(0.0, 1.0, 100).view(-1, 1).to(self.cfg.device)
+        # TODO: Should not be here
+        ret_linear = AnalyticRetardation.linear(
+            u_ret, por=self.cfg.por, rho_s=self.cfg.rho_s, Kd=self.cfg.Kd
+        )
+        ret_freundlich = AnalyticRetardation.freundlich(
+            u_ret,
+            por=self.cfg.por,
+            rho_s=self.cfg.rho_s,
+            Kf=self.cfg.Kf,
+            nf=self.cfg.nf,
+        )
+        ret_langmuir = AnalyticRetardation.langmuir(
+            u_ret,
+            por=self.cfg.por,
+            rho_s=self.cfg.rho_s,
+            smax=self.cfg.smax,
+            Kl=self.cfg.Kl,
+        )
+        np.save(out_dir / "u_ret.npy", u_ret)
+        np.save(out_dir / "retardation_linear.npy", ret_linear)
+        np.save(out_dir / "retardation_freundlich.npy", ret_freundlich)
+        np.save(out_dir / "retardation_langmuir.npy", ret_langmuir)
+
+        # Define the closure function that consists of resetting the
+        # gradient buffer, loss function calculation, and backpropagation
+        # The closure function is necessary for LBFGS optimizer, because
+        # it requires multiple function evaluations
+        # The closure function returns the loss value
+        def closure():
+            self.train()
+            optimizer.zero_grad()
+            ode_pred = self.forward(t)  # aka. y_pred
+            # TODO: mean instead of sum?
+            loss = self.cfg.error_mult * torch.sum((u_full_train - ode_pred) ** 2)
+
+            # Physical regularization: value of the retardation factor should decrease with increasing concentration
+            ret_inv_pred = self.retardation_inv_scaled(u_ret)
+            loss += self.cfg.phys_mult * torch.sum(
+                torch.relu(ret_inv_pred[:-1] - ret_inv_pred[1:])
+            )  # TODO: mean instead of sum?
+
+            loss.backward()
+
+            return loss
+
+        # Iterate until maximum epoch number is reached
+        for epoch in range(1, self.cfg.epochs + 1):
+            dt = time.time()
+            optimizer.step(closure)
+            loss = closure()
+            dt = time.time() - dt
+
+            print(
+                f"Training: Epoch [{epoch + 1}/{self.cfg.epochs}], "
+                f"Training Loss: {loss.item():.4f}, Runtime: {dt:.4f} secs"
+            )
+
+            ret_pred_path = self.cfg.model_path / f"retPred_{epoch}.npy"
+            np.save(ret_pred_path, self.retardation(u_ret).detach().numpy())
+
+    def retardation_inv_scaled(self, u):
+        return self.dudt_fun.flux_modules[0].coeff_nn(u)
+
+    def retardation(self, u):
+        return (
+            1.0
+            / self.dudt_fun.flux_modules[0].coeff_nn(u)
+            / 10 ** self.dudt_fun.flux_modules[0].p_exp
+        )
+
+
+class ConcentrationChangeRatePredictor(nn.Module):
     def __init__(self, u0, cfg):
         """
         Constructor
         Inputs:
-            u0      : initial condition, dim: [num_features, Nx, Ny]
-            cfg     : configuration object of the model setup, containing boundary
-                        condition types, values, learnable parameter settings, etc.
+            u0      : initial condition, dim: [num_features, Nx]
+            cfg     : configuration object of the model setup, containing boundary condition types, values, learnable parameter settings, etc.
         """
 
-        super(Net_Model, self).__init__()
+        super(ConcentrationChangeRatePredictor, self).__init__()
 
         self.flux_modules = nn.ModuleList()
         self.num_vars = u0.size(0)
@@ -899,17 +678,14 @@ class Net_Model(nn.Module):
             self.flux_modules.append(Flux_Kernels(u0[var_idx], self.cfg, var_idx))
 
     def forward(self, t, u):
-        """
-        The forward function calculates du/dt to be put into the ODE solver
+        """Computes du/dt to be put into the ODE solver
 
-        Inputs:
-            t   : time (scalar value, taken from the ODE solver)
-            u   : the unknown variables to be calculated taken from the previous
-                    time step, dim: [num_features, Nx, Ny]
+        Args:
+            t (float): time point
+            u (tensor): the unknown variables to be calculated taken from the previous time step, dim: [num_features, Nx]
 
-        Output:
-            du  : the time derivative of u (du/dt), dim: [num_features, Nx, Ny]
-
+        Returns:
+            tensor: the time derivative of u (du/dt), dim: [num_features, Nx]
         """
         flux = []
 
@@ -928,7 +704,7 @@ class Net_Model(nn.Module):
         return du
 
 
-def load_data(is_testing: bool = False):
+def load_data(cfg: Initialize, is_testing: bool = False):
     # Load training data with the original dimension of [Nx, Nt]
     # Reshape into [Nt, 1, Nx, Ny], with Ny = 1
     folder = "../../oldfinn/python/diffusion_sorption/synthetic_data/"
@@ -959,27 +735,18 @@ def load_data(is_testing: bool = False):
 
 
 def main():
+    cfg = Initialize()
+
     u0 = torch.zeros(cfg.num_vars, cfg.Nx, 1)
-    model = Net_Model(u0, cfg)
+    model = ConcentrationPredictor(u0=u0, cfg=cfg)
 
     # Train the model
-    train_data = load_data()
+    train_data = load_data(cfg)
     x = torch.linspace(0.0, cfg.X, cfg.Nx)
     t = torch.linspace(0.0, cfg.T, cfg.Nt)
-    trainer = Training(model, cfg)
-    trainer.model_train(u0, t[:51], train_data[:51])
+    model.run_training(t=t[:51], u_full_train=train_data[:51])
 
-    # Evaluate the trained model with extrapolation of the train dataset
-    extrapolate_train = Evaluate(x, t, train_data)
-    extrapolate_train.evaluate(cfg, model, u0, False)
-
-    # Evaluate the trained model with unseen test dataset
-    model_test = model
-    model_test.flux_modules[0].dirichlet_val[0] = 0.7
-    model_test.flux_modules[1].dirichlet_val[0] = 0.7
-    test_data = load_data(is_testing=True)
-    unseen_test = test.Evaluate(x, t, test_data)
-    unseen_test.evaluate(cfg, model_test, u0, True)
+    # TODO: Evaluate the trained model with unseen test dataset
 
 
 if __name__ == "__main__":
