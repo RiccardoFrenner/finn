@@ -717,14 +717,16 @@ def load_data(cfg: Initialize, is_testing: bool = False):
     else:
         raise ValueError("Invalid config entry")
 
+    folder = Path(folder).resolve()
+
     c_diss = pd.read_csv(
-        folder + f'/c_diss{"_test" if is_testing else ""}.csv', sep="\t", header=None
+        folder / f'c_diss{"_test" if is_testing else ""}.csv', sep="\t", header=None
     )
     c_diss = torch.tensor(np.array(c_diss)).unsqueeze(1)
     c_diss = c_diss.permute(2, 0, 1).unsqueeze(1)
 
     c_tot = pd.read_csv(
-        folder + f'/c_tot{"_test" if is_testing else ""}.csv', sep="\t", header=None
+        folder / f'c_tot{"_test" if is_testing else ""}.csv', sep="\t", header=None
     )
     c_tot = torch.tensor(np.array(c_tot)).unsqueeze(1)
     c_tot = c_tot.permute(2, 0, 1).unsqueeze(1)
