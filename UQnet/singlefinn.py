@@ -96,8 +96,8 @@ class Initialize:
         self.D_eff = params.D_eff
         ## Set diffusion coefficient to be learnable or not
         self.learn_coeff = params.learn_coeff
-        ## Set if diffusion coefficient to be approximated as a function
-        self.coeff_func = params.coeff_func
+        ## Set retardation factor to be approximated as a function
+        self.is_retardation_a_func = params.is_retardation_a_func
         ## Normalizer for functions that are approximated with a NN
         self.p_exp_flux = params.p_exp_flux
         ## Set the variable index to be used when calculating the fluxes
@@ -204,8 +204,6 @@ class Flux_Kernels(nn.Module):
         else:
             self.stencil = torch.tensor([1.0, -1.0])
 
-        # Extract the diffusion coefficient scalar value and set to be learnable
-        # if desired
         if torch.is_tensor(cfg.D_eff[var_idx]):
             self.D_eff = cfg.D_eff[var_idx].to(cfg.device)
         else:
@@ -213,9 +211,7 @@ class Flux_Kernels(nn.Module):
         if cfg.learn_coeff[var_idx]:
             self.D_eff = nn.Parameter(torch.tensor([self.D_eff], dtype=torch.float))
 
-        # Extract the boolean value to determine whether the diffusion coefficient
-        # is a function of the unknown variable
-        self.coeff_func = cfg.coeff_func[var_idx]
+        self.is_retardation_a_func = cfg.is_retardation_a_func[var_idx]
 
         # Extract value of the normalizing constant to be applied to the output
         # of the NN that predicts the diffusion coefficient function
@@ -224,10 +220,10 @@ class Flux_Kernels(nn.Module):
         else:
             self.p_exp = torch.tensor(cfg.p_exp_flux[var_idx]).to(cfg.device)
 
-        # Initialize a NN to predict diffusion coefficient as a function of
+        # Initialize a NN to predict retardation factor as a function of
         # the unknown variable if necessary
-        if self.coeff_func:
-            self.coeff_nn = Coeff_NN(
+        if self.is_retardation_a_func:
+            self.ret_inv_fun = RetardationInverse(
                 cfg.num_layers_flux[var_idx],
                 cfg.num_nodes_flux[var_idx],
                 len(cfg.flux_couple_idx[var_idx]),
@@ -245,7 +241,7 @@ class Flux_Kernels(nn.Module):
                             dim: [1, Nx, Ny]
 
             u_coupled   : all necessary unknown variables required to calculate
-                          the diffusion coeffient as a function, indexed by
+                          the retardation factor as a function, indexed by
                           flux_couple_idx[var_idx]
                           dim: [num_features, Nx, Ny]
 
@@ -257,17 +253,17 @@ class Flux_Kernels(nn.Module):
 
         """
 
-        # Reshape the input dimension for the coeff_nn model into [Nx, Ny, num_features]
+        # Reshape the input dimension for the retardation model into [Nx, Ny, num_features]
         u_coupled = u_coupled.permute(1, 2, 0)
 
-        # Calculate the flux multiplier (diffusion coefficient function) if set
+        # Calculate the flux multiplier (retardation function) if set
         # to be a function, otherwise set as tensor of ones
-        if self.coeff_func:
-            flux_mult = self.coeff_nn(u_coupled).squeeze(2) * 10**self.p_exp
+        if self.is_retardation_a_func:
+            ret_inv = self.ret_inv_fun(u_coupled).squeeze(2) * 10**self.p_exp
         else:
-            flux_mult = torch.ones(self.Nx, self.Ny)
+            ret_inv = torch.ones(self.Nx, self.Ny)
 
-        flux_mult = flux_mult.to(self.device)
+        ret_inv = ret_inv.to(self.device)
 
         # Squeeze the u_main dimension into [Nx, Ny]
         u_main = u_main.squeeze(0)
@@ -282,7 +278,7 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[0, :]
                 ).unsqueeze(0)
                 * self.D_eff
-                * flux_mult[0, :]
+                * ret_inv[0, :]
             )
 
         elif self.neumann_bool[0]:
@@ -308,14 +304,14 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[0, :]
                 ).unsqueeze(0)
                 * self.D_eff
-                * flux_mult[0, :]
+                * ret_inv[0, :]
             )
 
         # Calculate the fluxes of each control volume with its left neighboring cell
         left_neighbors = (
             (self.stencil[0] * u_main[:-1, :] + self.stencil[1] * u_main[1:, :])
             * self.D_eff
-            * flux_mult[1:, :]
+            * ret_inv[1:, :]
         )
         # Concatenate the left boundary fluxes with the left neighbors fluxes
         left_flux = torch.cat((left_bound_flux, left_neighbors))
@@ -330,7 +326,7 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[-1, :]
                 ).unsqueeze(0)
                 * self.D_eff
-                * flux_mult[-1, :]
+                * ret_inv[-1, :]
             )
 
         elif self.neumann_bool[1]:
@@ -356,14 +352,14 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[-1, :]
                 ).unsqueeze(0)
                 * self.D_eff
-                * flux_mult[-1, :]
+                * ret_inv[-1, :]
             )
 
         # Calculate the fluxes of each control volume with its right neighboring cell
         right_neighbors = (
             (self.stencil[0] * u_main[1:, :] + self.stencil[1] * u_main[:-1, :])
             * self.D_eff
-            * flux_mult[:-1, :]
+            * ret_inv[:-1, :]
         )
         # Concatenate the right neighbors fluxes with the right boundary fluxes
         right_flux = torch.cat((right_neighbors, right_bound_flux))
@@ -378,7 +374,7 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[:, 0]
                 ).unsqueeze(1)
                 * self.D_eff
-                * flux_mult[:, 0]
+                * ret_inv[:, 0]
             )
 
         elif self.neumann_bool[2]:
@@ -404,14 +400,14 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[:, 0]
                 ).unsqueeze(1)
                 * self.D_eff
-                * flux_mult[:, 0]
+                * ret_inv[:, 0]
             )
 
         # Calculate the fluxes of each control volume with its top neighboring cell
         top_neighbors = (
             (self.stencil[0] * u_main[:, :-1] + self.stencil[1] * u_main[:, 1:])
             * self.D_eff
-            * flux_mult[:, 1:]
+            * ret_inv[:, 1:]
         )
         # Concatenate the top boundary fluxes with the top neighbors fluxes
         top_flux = torch.cat((top_bound_flux, top_neighbors), dim=1)
@@ -426,7 +422,7 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[:, -1]
                 ).unsqueeze(1)
                 * self.D_eff
-                * flux_mult[:, -1]
+                * ret_inv[:, -1]
             )
 
         elif self.neumann_bool[3]:
@@ -452,14 +448,14 @@ class Flux_Kernels(nn.Module):
                     + self.stencil[1] * u_main[:, -1]
                 ).unsqueeze(1)
                 * self.D_eff
-                * flux_mult[:, -1]
+                * ret_inv[:, -1]
             )
 
         # Calculate the fluxes of each control volume with its bottom neighboring cell
         bottom_neighbors = (
             (self.stencil[0] * u_main[:, 1:] + self.stencil[1] * u_main[:, :-1])
             * self.D_eff
-            * flux_mult[:, :-1]
+            * ret_inv[:, :-1]
         )
         # Concatenate the bottom neighbors fluxes with the bottom boundary fluxes
         bottom_flux = torch.cat((bottom_neighbors, bottom_bound_flux), dim=1)
@@ -470,12 +466,10 @@ class Flux_Kernels(nn.Module):
         return flux
 
 
-class Coeff_NN(torch.nn.Module):
+class RetardationInverse(torch.nn.Module):
     """
-    The class Coeff_NN constructs a feedforward NN required for calculation
-    of diffusion coefficient as a function of u
-    It will be called in the Flux_Kernels constructor if the cfg.coeff_func is
-    set to be True
+    The class RetardationInverse constructs a feedforward NN for calculating the retardation factor as a function of u.
+    It will be called in the Flux_Kernels constructor if the cfg.is_retardation_a_func is set to be True.
     """
 
     def __init__(self, num_layers, num_nodes, num_vars):
@@ -489,56 +483,38 @@ class Coeff_NN(torch.nn.Module):
 
         """
 
-        super(Coeff_NN, self).__init__()
+        super(RetardationInverse, self).__init__()
 
-        # Initialize the layer as an empty list
         layer = []
-
-        # Add sequential layers as many as the specified num_layers, append
-        # to the layer list, including the output layer (hence the +1 in the
-        # iteration range)
         for i in range(num_layers + 1):
-            # Specify number of input and output features for each layer
             in_features = num_nodes
             out_features = num_nodes
 
-            # If it is the first hidden layer, set the number of input features
-            # to be = num_vars
             if i == 0:
                 in_features = num_vars
-            # If it is the output layer, set the number of output features to be = 1
             elif i == num_layers:
                 out_features = 1
 
-            # Create sequential layer, if output layer use sigmoid activation function
+            layer.append(torch.nn.Linear(in_features, out_features))
             if i < num_layers:
-                layer.append(
-                    torch.nn.Sequential(
-                        torch.nn.Linear(in_features, out_features), torch.nn.Tanh()
-                    )
-                )
+                layer.append(torch.nn.Tanh())
             else:
-                layer.append(
-                    torch.nn.Sequential(
-                        torch.nn.Linear(in_features, out_features), torch.nn.Sigmoid()
-                    )
-                )
+                layer.append(torch.nn.Sigmoid())
 
-        # Convert the list into a sequential module
         self.layers = torch.nn.Sequential(*layer)
 
     def forward(self, input):
         """
-        The forward function calculates the approximation of diffusion coefficient
+        The forward function calculates the approximation of retardation factor
         function using the specified input values
 
         Input:
             input   : input for the function, all u that is required to calculate
-                        the diffusion coefficient function (could be coupled with
+                        the retardation factor function (could be coupled with
                         other variables), dim: [Nx, Ny, num_features]
 
         Output:
-            output      : the approximation of the diffusion coefficient function
+            output      : the approximation of the retardation factor function
 
         """
 
@@ -648,12 +624,12 @@ class ConcentrationPredictor(nn.Module):
             np.save(ret_pred_path, self.retardation(u_ret).detach().numpy())
 
     def retardation_inv_scaled(self, u):
-        return self.dudt_fun.flux_modules[0].coeff_nn(u)
+        return self.dudt_fun.flux_modules[0].ret_inv_fun(u)
 
     def retardation(self, u):
         return (
             1.0
-            / self.dudt_fun.flux_modules[0].coeff_nn(u)
+            / self.dudt_fun.flux_modules[0].ret_inv_fun(u)
             / 10 ** self.dudt_fun.flux_modules[0].p_exp
         )
 
