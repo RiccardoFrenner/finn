@@ -128,7 +128,7 @@ class Initialize:
 
 
 class Flux_Kernels(nn.Module):
-    def __init__(self, u0, cfg, var_idx):
+    def __init__(self, u0, cfg, var_idx, ret_inv_fun=None):
         """
         Constructor
         Inputs:
@@ -222,12 +222,8 @@ class Flux_Kernels(nn.Module):
 
         # Initialize a NN to predict retardation factor as a function of
         # the unknown variable if necessary
-        if self.is_retardation_a_func:
-            self.ret_inv_fun = RetardationInverse(
-                cfg.num_layers_flux[var_idx],
-                cfg.num_nodes_flux[var_idx],
-                len(cfg.flux_couple_idx[var_idx]),
-            ).to(cfg.device)
+        if ret_inv_fun is not None:
+            self.ret_inv_fun = ret_inv_fun
             self.p_exp = nn.Parameter(torch.tensor([self.p_exp], dtype=torch.float))
 
     def forward(self, u_main, u_coupled, t):
@@ -524,7 +520,7 @@ class RetardationInverse(torch.nn.Module):
 
 
 class ConcentrationPredictor(nn.Module):
-    def __init__(self, u0: torch.Tensor, cfg: Initialize):
+    def __init__(self, u0: torch.Tensor, cfg: Initialize, ret_inv_funs=None):
         """TODO: Docstring
 
         Args:
@@ -532,10 +528,14 @@ class ConcentrationPredictor(nn.Module):
             cfg (_type_): _description_
         """
         super(ConcentrationPredictor, self).__init__()
+        if ret_inv_funs is None:
+            ret_inv_funs = [None] * len(u0)
 
         self.cfg = cfg
         self.u0 = u0
-        self.dudt_fun = ConcentrationChangeRatePredictor(u0, cfg)
+        self.dudt_fun = ConcentrationChangeRatePredictor(
+            u0, cfg, ret_inv_funs=ret_inv_funs
+        )
 
     def forward(self, t):
         """Predict the concentration profile at given time steps from an initial condition using the FINN method.
@@ -635,13 +635,15 @@ class ConcentrationPredictor(nn.Module):
 
 
 class ConcentrationChangeRatePredictor(nn.Module):
-    def __init__(self, u0, cfg):
+    def __init__(self, u0, cfg, ret_inv_funs=None):
         """
         Constructor
         Inputs:
             u0      : initial condition, dim: [num_features, Nx]
             cfg     : configuration object of the model setup, containing boundary condition types, values, learnable parameter settings, etc.
         """
+        if ret_inv_funs is None:
+            ret_inv_funs = [None] * len(u0)
 
         super(ConcentrationChangeRatePredictor, self).__init__()
 
@@ -651,7 +653,11 @@ class ConcentrationChangeRatePredictor(nn.Module):
 
         # Create flux kernel for each variable to be calculated
         for var_idx in range(self.num_vars):
-            self.flux_modules.append(Flux_Kernels(u0[var_idx], self.cfg, var_idx))
+            self.flux_modules.append(
+                Flux_Kernels(
+                    u0[var_idx], self.cfg, var_idx, ret_inv_fun=ret_inv_funs[var_idx]
+                )
+            )
 
     def forward(self, t, u):
         """Computes du/dt to be put into the ODE solver
@@ -716,7 +722,22 @@ def main():
     cfg = Initialize()
 
     u0 = torch.zeros(cfg.num_vars, cfg.Nx, 1)
-    model = ConcentrationPredictor(u0=u0, cfg=cfg)
+    model = ConcentrationPredictor(
+        u0=u0,
+        cfg=cfg,
+        ret_inv_funs=[
+            (
+                RetardationInverse(
+                    cfg.num_layers_flux[var_idx],
+                    cfg.num_nodes_flux[var_idx],
+                    len(cfg.flux_couple_idx[var_idx]),
+                ).to(cfg.device)
+                if is_fun
+                else None
+            )
+            for (var_idx, is_fun) in enumerate(cfg.is_retardation_a_func)
+        ],
+    )
 
     # Train the model
     train_data = load_data(cfg)
