@@ -474,7 +474,7 @@ def load_data(
     return torch.cat((c_diss, c_tot), dim=1)
 
 
-def create_neural_network(layers: list[int], activation_fun, activation_fun_end):
+def create_mlp(layers: list[int], activation_fun, activation_fun_end):
     network_layers = []
 
     for i in range(len(layers) - 1):
