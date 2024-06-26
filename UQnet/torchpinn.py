@@ -227,7 +227,6 @@ class CL_trainer:
             max_epochs=self.configs["Max_iter"],
         )
 
-        # IMPORTANT: has to be created after mean network finished training
         data_train_up, data_train_down = create_PI_training_data(
             self.networks["mean"], X=self.x_train, Y=self.y_train
         )

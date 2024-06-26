@@ -4,17 +4,18 @@
 
 import time
 from pathlib import Path
+from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import params
 import torch
 import torch.nn as nn
-
-# import torchpinn as tp3
+import torchpinn as tp3
 from lib import AnalyticRetardation, Flux_Kernels, create_mlp, load_data
 from torchdiffeq import odeint
 
-# print(tp3)
+print(tp3)
 
 
 class RetardationInverse(torch.nn.Module):
@@ -206,33 +207,131 @@ class ConcentrationChangeRatePredictor(nn.Module):
         return du
 
 
+class RetardationInverseStd(nn.Module):
+    def __init__(self, num_layers, num_nodes):
+        super(RetardationInverseStd, self).__init__()
+
+        self.layers = create_mlp(
+            [1] + [num_nodes] * num_layers + [1], nn.ReLU(), nn.Identity()
+        )
+
+    def forward(self, u):
+        u = torch.sqrt(torch.square(u) + 0.2)
+        return u
+
+
+def create_PI_training_data(y_pred_mean, X, Y) -> tuple[torch.Tensor, torch.Tensor]:
+    """Generate std training data"""
+    # threshold = 30
+    with torch.no_grad():
+        diff_train = Y - y_pred_mean
+        print(f"{diff_train.shape=}")
+        dist = torch.sum(diff_train**2, dim=[1, 2, 3])
+        threshold = torch.quantile(dist, 0.5)
+        print(f"{threshold=}")
+        mask = dist < threshold
+        print(f"{mask.shape=}")
+        print(f"{X.shape=}")
+        print(f"{Y.shape=}")
+
+        X_std = X[~mask].clone()
+        Y_std = diff_train[~mask].clone()
+        print(f"{X_std.shape=}")
+
+    return X_std, Y_std
+
+
 def main():
     cfg = params
 
     u0 = torch.zeros(cfg.num_vars, cfg.Nx, 1)
-    model = ConcentrationPredictor(
-        u0=u0,
-        cfg=cfg,
-        ret_inv_funs=[
-            (
-                RetardationInverse(
-                    cfg.num_layers_flux[var_idx],
-                    cfg.num_nodes_flux[var_idx],
-                ).to(cfg.device)
-                if is_fun
-                else None
-            )
-            for (var_idx, is_fun) in enumerate(cfg.is_retardation_a_func)
-        ],
+    ret_inv_mean_models = [
+        (
+            RetardationInverse(
+                cfg.num_layers_flux[var_idx],
+                cfg.num_nodes_flux[var_idx],
+            ).to(cfg.device)
+            if is_fun
+            else None
+        )
+        for (var_idx, is_fun) in enumerate(cfg.is_retardation_a_func)
+    ]
+    concentration_predictor = ConcentrationPredictor(
+        u0=u0.clone(), cfg=cfg, ret_inv_funs=ret_inv_mean_models
     )
 
-    # Train the model
-    train_data = load_data("freundlich")
+    # Load data
+    u_analytical = load_data("freundlich")
     # x = torch.linspace(0.0, cfg.X, cfg.Nx)
     t = torch.linspace(0.0, cfg.T, cfg.Nt)
-    model.run_training(t=t[:51], u_full_train=train_data[:51])
 
-    # TODO: Evaluate the trained model with unseen test dataset
+    train_split_index = 51
+    x_train = t[:train_split_index]
+    y_train = u_analytical[:train_split_index]
+    x_valid = t[train_split_index:]
+    y_valid = u_analytical[train_split_index:]
+
+    # Train the concentration predictor
+    concentration_predictor.run_training(t=x_train, u_full_train=y_train)
+    y_pred_mean = concentration_predictor(x_train).detach()
+
+    ret_inv_std_model = RetardationInverseStd(
+        cfg.num_layers_flux[0],
+        cfg.num_nodes_flux[0],
+    ).to(cfg.device)
+
+    # Train the standard deviation concentration model to get a trained ret_inv_std_model
+    x_train_std, y_train_std = create_PI_training_data(
+        y_pred_mean, x_train.clone(), y_train.clone()
+    )
+    concentration_predictor_std = ConcentrationPredictor(
+        u0=u0.clone(), cfg=cfg, ret_inv_funs=[ret_inv_std_model, None]
+    )
+    concentration_predictor_std.run_training(t=x_train_std, u_full_train=y_train_std)
+
+    # Evaluation
+    def eval_networks(x, as_numpy: bool = False) -> dict[str, Any]:
+        with torch.no_grad():
+            d = {
+                "mean": ret_inv_mean_models[0](x),
+                "up": ret_inv_std_model(x),
+                "down": -ret_inv_std_model(x),
+            }
+        if as_numpy:
+            d = {k: v.numpy() for k, v in d.items()}
+        return d
+
+    c_up, c_down = tp3.compute_boundary_factors(
+        y_train=y_train.numpy(),
+        network_preds=eval_networks(x_train, as_numpy=True),
+        quantile=0.95,
+        verbose=1,
+    )
+
+    pred_train = eval_networks(x_train)
+    pred_valid = eval_networks(x_valid)
+
+    PICP_train, MPIW_train = tp3.caps_calculation(
+        pred_train, c_up, c_down, y_train.numpy()
+    )
+    PICP_valid, MPIW_valid = tp3.caps_calculation(
+        pred_valid, c_up, c_down, y_valid.numpy()
+    )
+
+    fig, ax = plt.subplots()
+    ax.plot(x_train, y_train, ".")
+    y_U_PI_array_train = (
+        (pred_train["mean"] + c_up * pred_train["up"]).numpy().flatten()
+    )
+    y_L_PI_array_train = (
+        (pred_train["mean"] - c_down * pred_train["down"]).numpy().flatten()
+    )
+    y_mean = pred_train["mean"].numpy().flatten()
+    sort_indices = np.argsort(x_train.flatten())
+    ax.plot(x_train.flatten()[sort_indices], y_mean[sort_indices], "-")
+    ax.plot(x_train.flatten()[sort_indices], y_U_PI_array_train[sort_indices], "-")
+    ax.plot(x_train.flatten()[sort_indices], y_L_PI_array_train[sort_indices], "-")
+    plt.show()
 
 
 if __name__ == "__main__":
