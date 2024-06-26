@@ -8,58 +8,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
+from lib import train_network
 from scipy.optimize import bisect
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-
-
-class EarlyStopper:
-    def __init__(self, patience=7, verbose=False, delta=0, path="checkpoint.pt"):
-        """
-        Args:
-            patience (int): How long to wait after last time validation loss improved.
-                            Default: 7
-            verbose (bool): If True, prints a message for each validation loss improvement.
-                            Default: False
-            delta (float): Minimum change in the monitored quantity to qualify as an improvement.
-                            Default: 0
-            path (str): Path for the checkpoint to be saved to.
-                            Default: 'checkpoint.pt'
-        """
-        self.patience = patience
-        self.verbose = verbose
-        self.delta = delta
-        self.path = path
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.val_loss_min = np.Inf
-
-    def update(self, val_loss, model):
-        score = -val_loss
-
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model)
-        elif score < self.best_score + self.delta:
-            self.counter += 1
-            if self.verbose:
-                print(f"EarlyStopper counter: {self.counter} out of {self.patience}")
-            if self.counter >= self.patience:
-                self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model)
-            self.counter = 0
-
-    def save_checkpoint(self, val_loss, model):
-        """Saves model when validation loss decrease."""
-        if self.verbose:
-            print(
-                f"Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ..."
-            )
-        torch.save(model.state_dict(), self.path)
-        self.val_loss_min = val_loss
 
 
 class CL_dataLoader:
@@ -226,45 +178,6 @@ def create_PI_training_data(
         Y_down = -1.0 * diff_train[down_idx].unsqueeze(1)
 
     return ((X_up, Y_up), (X_down, Y_down))
-
-
-def train_network(
-    model, optimizer, criterion, train_loader, val_loader, max_epochs: int
-) -> None:
-    early_stopper = EarlyStopper(patience=300, verbose=False)
-
-    for epoch in range(1, max_epochs + 1):
-        # Training phase
-        model.train()
-        for data, target in train_loader:
-            optimizer.zero_grad()
-            output = model(data)
-            loss_train = criterion(output, target)
-            loss_train.backward()
-            optimizer.step()
-
-        # Validation phase
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for data, target in val_loader:
-                output = model(data)
-                loss_valid = criterion(output, target)
-                val_loss += loss_valid.item()
-        val_loss = val_loss / len(val_loader)
-
-        if epoch % max(1, max_epochs // 100) == 0:
-            print(f"Epoch {epoch}, Validation Loss: {val_loss:.6f}")
-
-        # Check early stopping condition
-        early_stopper.update(val_loss, model)
-        if early_stopper.early_stop:
-            print("Early stopping")
-            break
-
-    # Load the last checkpoint with the best model
-    # TODO: This does not actually look better in the plot?
-    # model.load_state_dict(torch.load('checkpoint.pt'))
 
 
 class CL_trainer:

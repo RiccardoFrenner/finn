@@ -6,20 +6,33 @@ Created on March 2021
 This script contains all inputs necessary to configure and set up the model and
 simulation
 """
+import shutil
+from pathlib import Path
 
 import torch
 
+clear_dirs = False
+
 # MODEL NAME & SETTING
 model_name = "syn_freundlich_01"
+main_path = Path().cwd()
+model_path = main_path / model_name
+if clear_dirs and model_path.exists():
+    shutil.rmtree(model_path)
+model_path.mkdir(parents=True, exist_ok=True)
 device_name = "cpu" # Choose between "cpu" or "cuda"
 
 
 # NETWORK HYPER-PARAMETERS
+flux_layers = 3         # number of hidden layers for the NN in the flux kernels
+state_layers = 3        # number of hidden layers for the NN in the state kernels
+flux_nodes = 15         # number of hidden nodes per layer for the NN in the flux kernels
+state_nodes = 15        # number of hidden nodes per layer for the NN in the flux kernels
 error_mult = 1          # multiplier for the squared error in the loss function calculation
 breakthrough_mult = 1   # multiplier for the breakthrough curve error in the loss function calculation
 profile_mult = 1        # multiplier for the concentration profile error in the loss function calculation
 phys_mult = 100         # multiplier for the physical regularization in the loss function calculation
-epochs = 10            # maximum epoch for training
+epochs = 100            # maximum epoch for training
 lbfgs_optim = True      # Use L-BFGS as optimizer, else use ADAM
 train_breakthrough = False # Train using only breakthrough curve data
 linear = False          # Training data generated with the linear isotherm
@@ -46,8 +59,16 @@ X = 1.0                 # length of sample [m]
 dx = 0.04               # length of discrete control volume [m]
 T = 10000               # simulation time [days]
 dt = 5                  # time step [days]
+Nx = int(X / dx + 1)
+Nt = int(T / dt + 1)
+cauchy_val = dx
+
+device = torch.device("cpu")
 
 # Inputs for Flux Kernels
+## Set number of hidden layers and hidden nodes
+num_layers_flux = [flux_layers, flux_layers]
+num_nodes_flux = [flux_nodes, flux_nodes]
 ## Set numerical stencil to be learnable or not
 learn_stencil = [False, False]
 ## Effective diffusion coefficient for each variable
@@ -77,6 +98,9 @@ neumann_val = [torch.tensor([0.0, 0.0, 0.0, 0.0]),
 cauchy_mult = [dx, dx]
 
 # Inputs for State Kernels
+## Set number of hidden layers and hidden nodes
+num_layers_state = [state_layers, state_layers]
+num_nodes_state = [state_nodes, state_nodes]
 ## Normalizer for the reaction functions that are approximated with a NN
 p_exp_state = [torch.tensor([0.0]), torch.tensor([0.0])]
 ## Set the variable indices necessary to calculate the reaction function

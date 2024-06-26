@@ -1,20 +1,20 @@
-import sys
+# import sys
 
-sys.path.append("../../../../finn/UQnet")
-sys.path.append("../../oldfinn/python/diffusion_sorption/synthetic_data/")
+# sys.path.append("../../../../finn/UQnet")
 
 import time
 from pathlib import Path
 
 import numpy as np
-import syn00_config as params
+import params
 import torch
 import torch.nn as nn
-import torchpinn as tp3
+
+# import torchpinn as tp3
 from lib import AnalyticRetardation, Flux_Kernels, create_mlp, load_data
 from torchdiffeq import odeint
 
-print(tp3)
+# print(tp3)
 
 
 class RetardationInverse(torch.nn.Module):
