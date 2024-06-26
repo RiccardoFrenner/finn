@@ -24,10 +24,6 @@ device_name = "cpu" # Choose between "cpu" or "cuda"
 
 
 # NETWORK HYPER-PARAMETERS
-flux_layers = 3         # number of hidden layers for the NN in the flux kernels
-state_layers = 3        # number of hidden layers for the NN in the state kernels
-flux_nodes = 15         # number of hidden nodes per layer for the NN in the flux kernels
-state_nodes = 15        # number of hidden nodes per layer for the NN in the flux kernels
 error_mult = 1          # multiplier for the squared error in the loss function calculation
 breakthrough_mult = 1   # multiplier for the breakthrough curve error in the loss function calculation
 profile_mult = 1        # multiplier for the concentration profile error in the loss function calculation
@@ -66,9 +62,6 @@ cauchy_val = dx
 device = torch.device("cpu")
 
 # Inputs for Flux Kernels
-## Set number of hidden layers and hidden nodes
-num_layers_flux = [flux_layers, flux_layers]
-num_nodes_flux = [flux_nodes, flux_nodes]
 ## Set numerical stencil to be learnable or not
 learn_stencil = [False, False]
 ## Effective diffusion coefficient for each variable
@@ -96,12 +89,3 @@ neumann_val = [torch.tensor([0.0, 0.0, 0.0, 0.0]),
 ## Set multiplier for the Cauchy boundary condition if necessary
 ## (will be multiplied with D_eff in the flux kernels), otherwise set = 0
 cauchy_mult = [dx, dx]
-
-# Inputs for State Kernels
-## Set number of hidden layers and hidden nodes
-num_layers_state = [state_layers, state_layers]
-num_nodes_state = [state_nodes, state_nodes]
-## Normalizer for the reaction functions that are approximated with a NN
-p_exp_state = [torch.tensor([0.0]), torch.tensor([0.0])]
-## Set the variable indices necessary to calculate the reaction function
-state_couple_idx = [torch.tensor([0]), torch.tensor([1])]

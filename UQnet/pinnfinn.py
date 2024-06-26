@@ -18,33 +18,6 @@ from torchdiffeq import odeint
 print(tp3)
 
 
-class RetardationInverse(torch.nn.Module):
-    """
-    The class RetardationInverse constructs a feedforward NN for calculating the retardation factor as a function of u.
-    It will be called in the Flux_Kernels constructor if the cfg.is_retardation_a_func is set to be True.
-    """
-
-    def __init__(self, num_layers, num_nodes):
-        """
-        Constructor
-
-        Inputs:
-            num_layers  : number of hidden layers (excluding output layer)
-            num_nodes   : number of hidden nodes in each hidden layer
-        """
-
-        super(RetardationInverse, self).__init__()
-
-        layers = [1] + [num_nodes] * num_layers + [1]
-        activation_fun = nn.Tanh()
-        activation_fun_end = nn.Sigmoid()
-        self.layers = create_mlp(layers, activation_fun, activation_fun_end)
-
-    def forward(self, u):
-        """Computes the approximation of retardation factor function."""
-        return self.layers(u)
-
-
 class ConcentrationPredictor(nn.Module):
     def __init__(self, u0: torch.Tensor, cfg, ret_inv_funs=None):
         """TODO: Docstring
@@ -87,6 +60,7 @@ class ConcentrationPredictor(nn.Module):
         out_dir.mkdir(exist_ok=True, parents=True)
 
         optimizer = torch.optim.LBFGS(self.parameters(), lr=0.1)
+        optimizer.zero_grad()
 
         u_ret = torch.linspace(0.0, 1.0, 100).view(-1, 1).to(self.cfg.device)
         # TODO: Should not be here
@@ -137,13 +111,13 @@ class ConcentrationPredictor(nn.Module):
         # Iterate until maximum epoch number is reached
         for epoch in range(1, self.cfg.epochs + 1):
             dt = time.time()
-            optimizer.step(closure)
-            loss = closure()
+            loss = optimizer.step(closure)
+            # loss = closure()
             dt = time.time() - dt
 
             print(
                 f"Training: Epoch [{epoch + 1}/{self.cfg.epochs}], "
-                f"Training Loss: {loss.item():.4f}, Runtime: {dt:.4f} secs"
+                f"Training Loss: {loss:.4f}, Runtime: {dt:.4f} secs"
             )
 
             ret_pred_path = self.cfg.model_path / f"retPred_{epoch}.npy"
@@ -208,12 +182,10 @@ class ConcentrationChangeRatePredictor(nn.Module):
 
 
 class RetardationInverseStd(nn.Module):
-    def __init__(self, num_layers, num_nodes):
+    def __init__(self, layers: list[int]):
         super(RetardationInverseStd, self).__init__()
 
-        self.layers = create_mlp(
-            [1] + [num_nodes] * num_layers + [1], nn.ReLU(), nn.Identity()
-        )
+        self.layers = create_mlp(layers, nn.ReLU(), nn.Identity())
 
     def forward(self, u):
         u = torch.sqrt(torch.square(u) + 0.2)
@@ -224,19 +196,19 @@ def create_PI_training_data(y_pred_mean, X, Y) -> tuple[torch.Tensor, torch.Tens
     """Generate std training data"""
     # threshold = 30
     with torch.no_grad():
-        diff_train = Y - y_pred_mean
-        print(f"{diff_train.shape=}")
+        diff_train = Y.detach() - y_pred_mean.detach()
+        # print(f"{diff_train.shape=}")
         dist = torch.sum(diff_train**2, dim=[1, 2, 3])
         threshold = torch.quantile(dist, 0.5)
-        print(f"{threshold=}")
+        # print(f"{threshold=}")
         mask = dist < threshold
-        print(f"{mask.shape=}")
-        print(f"{X.shape=}")
-        print(f"{Y.shape=}")
+        # print(f"{mask.shape=}")
+        # print(f"{X.shape=}")
+        # print(f"{Y.shape=}")
 
-        X_std = X[~mask].clone()
-        Y_std = diff_train[~mask].clone()
-        print(f"{X_std.shape=}")
+        X_std = X[~mask].clone().detach().requires_grad_(False)
+        Y_std = diff_train[~mask].clone().detach().requires_grad_(False)
+        # print(f"{X_std.shape=}")
 
     return X_std, Y_std
 
@@ -246,14 +218,7 @@ def main():
 
     u0 = torch.zeros(cfg.num_vars, cfg.Nx, 1)
     ret_inv_mean_models = [
-        (
-            RetardationInverse(
-                cfg.num_layers_flux[var_idx],
-                cfg.num_nodes_flux[var_idx],
-            ).to(cfg.device)
-            if is_fun
-            else None
-        )
+        (create_mlp([1, 15, 15, 15, 1], nn.Tanh(), nn.Sigmoid()) if is_fun else None)
         for (var_idx, is_fun) in enumerate(cfg.is_retardation_a_func)
     ]
     concentration_predictor = ConcentrationPredictor(
@@ -273,20 +238,36 @@ def main():
 
     # Train the concentration predictor
     concentration_predictor.run_training(t=x_train, u_full_train=y_train)
-    y_pred_mean = concentration_predictor(x_train).detach()
+    with torch.no_grad():
+        y_pred_mean = concentration_predictor(x_train)
 
-    ret_inv_std_model = RetardationInverseStd(
-        cfg.num_layers_flux[0],
-        cfg.num_nodes_flux[0],
-    ).to(cfg.device)
+    ret_inv_std_model = RetardationInverseStd([1, 15, 15, 15, 1])
 
     # Train the standard deviation concentration model to get a trained ret_inv_std_model
-    x_train_std, y_train_std = create_PI_training_data(
-        y_pred_mean, x_train.clone(), y_train.clone()
-    )
+    # ========================
+    # This works:
+    x_train_std = torch.linspace(0, cfg.T, cfg.Nt)[:train_split_index]
+    y_train_std = y_train.clone()
+    # ========================
+    # But this does not work:
+    # torch.cuda.empty_cache()
+    # x_train_std_, y_train_std_ = create_PI_training_data(
+    #     y_pred_mean.clone().detach(),
+    #     x_train.clone().detach(),
+    #     y_train.clone().detach(),
+    # )
+    # # save as npy files
+    # np.save("x_train_std.npy", x_train_std_.numpy())
+    # np.save("y_train_std.npy", y_train_std_.numpy())
+    # x_train_std = torch.from_numpy(np.load("x_train_std.npy")).to(cfg.device)
+    # y_train_std = torch.from_numpy(np.load("y_train_std.npy")).to(cfg.device)
+    # ========================
     concentration_predictor_std = ConcentrationPredictor(
         u0=u0.clone(), cfg=cfg, ret_inv_funs=[ret_inv_std_model, None]
     )
+    concentration_predictor.zero_grad()
+    concentration_predictor_std.zero_grad()
+    print("Starting training for std model")
     concentration_predictor_std.run_training(t=x_train_std, u_full_train=y_train_std)
 
     # Evaluation
