@@ -6,13 +6,12 @@ from typing import Any
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import params
 import torch
 import torch.nn as nn
-from lib import EarlyStopper, Flux_Kernels
-import params
+from lib import EarlyStopper, Flux_Kernels, load_data
 from scipy.optimize import bisect
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from torchdiffeq import odeint
 
 
 class CL_dataLoader:
@@ -136,14 +135,8 @@ def compute_boundary_factors(
     num_outlier = int(n_train * (1 - quantile) / 2)
 
     if verbose > 0:
-        print(
-            "--- Start boundary optimizations for SINGLE quantile: {}".format(quantile)
-        )
-        print(
-            "--- Number of outlier based on the defined quantile: {}".format(
-                num_outlier
-            )
-        )
+        print(f"--- Start boundary optimizations for SINGLE quantile: {quantile}")
+        print(f"--- Number of outlier based on the defined quantile: {num_outlier}")
 
     c_up, c_down = [
         optimize_bound(
@@ -157,8 +150,8 @@ def compute_boundary_factors(
     ]
 
     if verbose > 0:
-        print("--- c_up: {}".format(c_up))
-        print("--- c_down: {}".format(c_down))
+        print(f"--- c_up: {c_up}")
+        print(f"--- c_down: {c_down}")
 
     return c_up, c_down
 
@@ -168,19 +161,17 @@ def create_PI_training_data(
 ) -> tuple[tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
     """Generate up and down training data"""
     with torch.no_grad():
-        diff_train = Y.reshape(Y.shape[0], -1) - network_mean(X)
-        # print(diff_train.shape)
-        dist = torch.sum(diff_train**2, dim=1)
+        diff_train = Y - network_mean(X)
+        dist = torch.sum(diff_train**2, dim=[1, 2, 3])
         threshold = np.quantile(dist, 0.5)
         up_idx = (dist > threshold).flatten()
         down_idx = (dist < threshold).flatten()
-        # print(f"{np.count_nonzero(up_idx)=}")
 
-        X_up = X[up_idx.flatten()].unsqueeze(1)
-        Y_up = diff_train[up_idx].unsqueeze(1)
+        X_up = X[up_idx.flatten()]
+        Y_up = diff_train[up_idx]
 
-        X_down = X[down_idx.flatten()].unsqueeze(1)
-        Y_down = -1.0 * diff_train[down_idx].unsqueeze(1)
+        X_down = X[down_idx.flatten()]
+        Y_down = -1.0 * diff_train[down_idx]
 
     return ((X_up, Y_up), (X_down, Y_down))
 
@@ -204,23 +195,24 @@ def train_network(
     for epoch in range(1, max_epochs + 1):
         # Training phase
         data, target = train_loader[0]
-        optimizer.step(closure)
+        loss_train = optimizer.step(closure)
+        # print(f"Epoch: {epoch}, Loss: {loss_train}")
 
         # Validation phase
         model.eval()
-        val_loss = 0.0
+        loss_val = 0.0
         with torch.no_grad():
             for data, target in val_loader:
                 output = model(data)
                 loss_valid = criterion(output, target)
-                val_loss += loss_valid.item()
-        val_loss = val_loss / len(val_loader)
+                loss_val += loss_valid.item()
+        loss_val = loss_val / len(val_loader)
 
-        if epoch % max(1, max_epochs // 100) == 0:
-            print(f"Epoch {epoch}, Validation Loss: {val_loss:.6f}")
+        # if epoch % max(1, max_epochs // 100) == 0:
+        print(f"{epoch=}, {loss_val=:.6f}, {loss_train=:.6f}")
 
         # Check early stopping condition
-        early_stopper.update(val_loss, model)
+        early_stopper.update(loss_val, model)
         if early_stopper.early_stop:
             print("Early stopping")
             break
@@ -279,6 +271,7 @@ class CL_trainer:
             max_epochs=self.configs["Max_iter"],
         )
 
+        print("--- Start PI training ---")
         data_train_up, data_train_down = create_PI_training_data(
             self.networks["mean"], X=self.x_train, Y=self.y_train
         )
@@ -488,8 +481,10 @@ def main():
         x_test=xTest,
         y_test=yTest,
     )
+    print("Start training")
     trainer.train()  # training for 3 networks
 
+    print("Start computing CUP, CDOWN")
     c_up, c_down = compute_boundary_factors(
         y_train=yTrain.numpy(),
         network_preds=trainer.eval_networks(xTrain, as_numpy=True),
