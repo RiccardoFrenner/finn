@@ -467,6 +467,7 @@ def main():
     net_mean = UQ_Net_mean(configs, num_inputs, num_outputs)
     net_up = UQ_Net_std(configs, num_inputs, num_outputs, net="up")
     net_down = UQ_Net_std(configs, num_inputs, num_outputs, net="down")
+    print("Set up network instances")
 
     # Initialize trainer and conduct training/optimizations
     trainer = CL_trainer(
@@ -478,8 +479,6 @@ def main():
         y_train=yTrain,
         x_valid=xValid,
         y_valid=yValid,
-        x_test=xTest,
-        y_test=yTest,
     )
     print("Start training")
     trainer.train()  # training for 3 networks
@@ -494,11 +493,9 @@ def main():
 
     pred_train = trainer.eval_networks(xTrain)
     pred_valid = trainer.eval_networks(xValid)
-    pred_test = trainer.eval_networks(xTest)
 
     PICP_train, MPIW_train = caps_calculation(pred_train, c_up, c_down, yTrain.numpy())
     PICP_valid, MPIW_valid = caps_calculation(pred_valid, c_up, c_down, yValid.numpy())
-    PICP_test, MPIW_test = caps_calculation(pred_test, c_up, c_down, yTest.numpy())
 
     fig, ax = plt.subplots()
     ax.plot(xTrain, yTrain, ".")
