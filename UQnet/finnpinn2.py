@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from lib import train_network
+from lib import EarlyStopper, Flux_Kernels
+import params
 from scipy.optimize import bisect
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -184,6 +185,51 @@ def create_PI_training_data(
     return ((X_up, Y_up), (X_down, Y_down))
 
 
+def train_network(
+    model, optimizer, criterion, train_loader, val_loader, max_epochs: int
+) -> None:
+    early_stopper = EarlyStopper(patience=300, verbose=False)
+
+    def closure():
+        model.train()
+        for data, target in train_loader:
+            optimizer.zero_grad()
+            output = model(data)
+            loss = criterion(output, target)
+            loss.backward()
+
+        return loss
+
+
+    for epoch in range(1, max_epochs + 1):
+        # Training phase
+        data, target = train_loader[0]
+        optimizer.step(closure)
+
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for data, target in val_loader:
+                output = model(data)
+                loss_valid = criterion(output, target)
+                val_loss += loss_valid.item()
+        val_loss = val_loss / len(val_loader)
+
+        if epoch % max(1, max_epochs // 100) == 0:
+            print(f"Epoch {epoch}, Validation Loss: {val_loss:.6f}")
+
+        # Check early stopping condition
+        early_stopper.update(val_loss, model)
+        if early_stopper.early_stop:
+            print("Early stopping")
+            break
+
+    # Load the last checkpoint with the best model
+    # TODO: This does not actually look better in the plot?
+    # model.load_state_dict(torch.load('checkpoint.pt'))
+
+
 class CL_trainer:
     def __init__(
         self,
@@ -208,9 +254,11 @@ class CL_trainer:
             "down": net_down,
         }
         self.optimizers = {
-            network_type: torch.optim.Adam(
-                network.parameters(), lr=0.02, weight_decay=2e-2
-            )
+            # network_type: torch.optim.Adam(
+            #     network.parameters(), lr=0.02, weight_decay=2e-2
+            # )
+            # for network_type, network in self.networks.items()
+            network_type: torch.optim.LBFGS(network.parameters(), lr=0.01)
             for network_type, network in self.networks.items()
         }
 
