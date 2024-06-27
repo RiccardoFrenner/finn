@@ -158,10 +158,7 @@ class Flux_Kernels(nn.Module):
 
         # Extract value of the normalizing constant to be applied to the output
         # of the NN that predicts the diffusion coefficient function
-        if torch.is_tensor(cfg.p_exp_flux[var_idx]):
-            self.p_exp = cfg.p_exp_flux[var_idx]
-        else:
-            self.p_exp = torch.tensor(cfg.p_exp_flux[var_idx])
+        self.p_exp = torch.tensor(cfg.p_exp_flux[var_idx])
 
         # Initialize a NN to predict retardation factor as a function of
         # the unknown variable if necessary
@@ -406,6 +403,329 @@ class Flux_Kernels(nn.Module):
         flux = left_flux + right_flux + top_flux + bottom_flux
 
         return flux
+
+
+
+
+class Flux_Kernels_No_Ret(nn.Module):
+    def __init__(self):
+        """
+        Constructor
+        Inputs:
+            u0      : initial condition, dim: [Nx, Ny]
+            cfg     : configuration object of the model setup, containing boundary
+                        condition types, values, learnable parameter settings, etc.
+            var_idx : index of the calculated variable (could be > 1 for coupled
+                        systems)
+        """
+
+        super(Flux_Kernels_No_Ret, self).__init__()
+
+        u0 = torch.zeros(26, 1)
+        self.Nx = u0.size(0)
+        self.Ny = u0.size(1)
+        self.u0 = u0
+
+        var_idx = 1
+        solubility = 1.0  # top boundary value [kg/m^3]
+        dirichlet_bool = [[True, False, False, False], [True, False, False, False]]
+        neumann_bool = [[False, False, True, True], [False, False, True, True]]
+        cauchy_bool = [[False, True, False, False], [False, True, False, False]]
+        dirichlet_val = [[solubility, 0.0, 0.0, 0.0], [solubility, 0.0, 0.0, 0.0]]
+        neumann_val = [[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]
+        learn_coeff = [False, True]
+        dx = 0.04
+        D = 0.0005  # effective diffusion coefficient [m^2/day]
+        D_eff = [D / (dx**2), 0.25]
+        cauchy_mult = [dx, dx]
+
+        # Variables that act as switch to use different types of boundary
+        # condition
+        # Each variable consists of boolean values at all 2D domain boundaries:
+        # [left (x = 0), right (x = Nx), top (y = 0), bottom (y = Ny)]
+        # For 1D, only the first two values matter, set the last two values to
+        # be no-flux boundaries (zero neumann_val)
+        self.dirichlet_bool = dirichlet_bool[var_idx]
+        self.neumann_bool = neumann_bool[var_idx]
+        self.cauchy_bool = cauchy_bool[var_idx]
+
+        # Variables that store the values of the boundary condition of each type
+        # Values = 0 if not used, otherwise specify in the configuration file
+        # Each variable consists of real values at all 2D domain boundaries:
+        # [left (x = 0), right (x = Nx), top (y = 0), bottom (y = Ny)]
+        # For 1D, only the first two values matter, set the last two values to
+        # be no-flux boundaries
+        if torch.is_tensor(dirichlet_val[var_idx]):
+            self.dirichlet_val = dirichlet_val[var_idx]
+        else:
+            self.dirichlet_val = torch.tensor(dirichlet_val[var_idx])
+
+        if torch.is_tensor(neumann_val[var_idx]):
+            self.neumann_val = neumann_val[var_idx]
+        else:
+            self.neumann_val = torch.tensor(neumann_val[var_idx])
+
+        # For Cauchy BC, the initial Cauchy value is set to be the initial
+        # condition at each corresponding domain boundary, and will be updated
+        # through time
+        self.cauchy_val = []
+        self.cauchy_val.append(u0[0, :])
+        self.cauchy_val.append(u0[-1, :])
+        self.cauchy_val.append(u0[:, 0])
+        self.cauchy_val.append(u0[:, -1])
+
+        # Set the Cauchy BC multiplier (to be multiplied with the gradient of
+        # the unknown variable and the diffusion coefficient)
+        if torch.is_tensor(cauchy_mult[var_idx]):
+            self.cauchy_mult = cauchy_mult[var_idx]
+        else:
+            self.cauchy_mult = torch.tensor(cauchy_mult[var_idx])
+
+        self.stencil = torch.tensor([1.0, -1.0])
+
+        if torch.is_tensor(D_eff[var_idx]):
+            self.D_eff = D_eff[var_idx]
+        else:
+            self.D_eff = torch.tensor(D_eff[var_idx])
+        if learn_coeff[var_idx]:
+            self.D_eff = nn.Parameter(torch.tensor([self.D_eff], dtype=torch.float))
+        
+
+    def forward(self, u_main, u_coupled, t):
+        """
+        The forward function calculates the integrated flux between each control
+        volume and its neighbors
+
+        Inputs:
+            u_main      : the unknown variable to be used to calculate the flux
+                            indexed by flux_calc_idx[var_idx]
+                            dim: [1, Nx, Ny]
+
+            u_coupled   : all necessary unknown variables required to calculate
+                          the retardation factor as a function, indexed by
+                          flux_couple_idx[var_idx]
+                          dim: [num_features, Nx, Ny]
+
+            t           : time (scalar value, taken from the ODE solver)
+
+        Output:
+            flux        : the integrated flux for all control volumes
+                            dim: [Nx, Ny]
+
+        """
+
+        # Reshape the input dimension for the retardation model into [Nx, Ny, num_features]
+        # print("="*100)
+        # print({u_main.shape, u_coupled.shape})
+        # print("="*100)
+        if u_coupled.shape[0] != 1:
+            u_coupled = u_coupled.unsqueeze(0)
+        u_coupled = u_coupled.permute(1, 2, 0)
+
+        # Calculate the flux multiplier (retardation function) if set
+        # to be a function, otherwise set as tensor of ones
+        ret_inv = torch.ones(self.Nx, self.Ny)
+
+        # Squeeze the u_main dimension into [Nx, Ny]
+        u_main = u_main.squeeze(0)
+
+        # Left Boundary Condition
+        if self.dirichlet_bool[0]:
+            # If Dirichlet, calculate the flux at the boundary using the
+            # Dirichlet value as a constant
+            left_bound_flux = (
+                (
+                    self.stencil[0] * self.dirichlet_val[0]
+                    + self.stencil[1] * u_main[0, :]
+                ).unsqueeze(0)
+                * self.D_eff
+                * ret_inv[0, :]
+            )
+
+        elif self.neumann_bool[0]:
+            # If Neumann, set the Neumann value as the flux at the boundary
+            left_bound_flux = torch.cat(
+                self.Ny * [self.neumann_val[0].unsqueeze(0)]
+            ).unsqueeze(0)
+
+        elif self.cauchy_bool[0]:
+            # If Cauchy, first set the value to be equal to the initial condition
+            # at t = 0.0, otherwise update the value according to the previous
+            # time step value
+            if t == 0.0:
+                self.cauchy_val[0] = self.u0[0, :]
+            else:
+                self.cauchy_val[0] = (
+                    (u_main[0, :] - self.cauchy_val[0]) * self.cauchy_mult * self.D_eff
+                )
+            # Calculate the flux at the boundary using the updated Cauchy value
+            left_bound_flux = (
+                (
+                    self.stencil[0] * self.cauchy_val[0]
+                    + self.stencil[1] * u_main[0, :]
+                ).unsqueeze(0)
+                * self.D_eff
+                * ret_inv[0, :]
+            )
+
+        # Calculate the fluxes of each control volume with its left neighboring cell
+        left_neighbors = (
+            (self.stencil[0] * u_main[:-1, :] + self.stencil[1] * u_main[1:, :])
+            * self.D_eff
+            * ret_inv[1:, :]
+        )
+        # Concatenate the left boundary fluxes with the left neighbors fluxes
+        left_flux = torch.cat((left_bound_flux, left_neighbors))
+
+        # Right Boundary Condition
+        if self.dirichlet_bool[1]:
+            # If Dirichlet, calculate the flux at the boundary using the
+            # Dirichlet value as a constant
+            right_bound_flux = (
+                (
+                    self.stencil[0] * self.dirichlet_val[1]
+                    + self.stencil[1] * u_main[-1, :]
+                ).unsqueeze(0)
+                * self.D_eff
+                * ret_inv[-1, :]
+            )
+
+        elif self.neumann_bool[1]:
+            # If Neumann, set the Neumann value as the flux at the boundary
+            right_bound_flux = torch.cat(
+                self.Ny * [self.neumann_val[1].unsqueeze(0)]
+            ).unsqueeze(0)
+
+        elif self.cauchy_bool[1]:
+            # If Cauchy, first set the value to be equal to the initial condition
+            # at t = 0.0, otherwise update the value according to the previous
+            # time step value
+            if t == 0.0:
+                self.cauchy_val[1] = self.u0[-1, :]
+            else:
+                self.cauchy_val[1] = (
+                    (u_main[-1, :] - self.cauchy_val[1]) * self.cauchy_mult * self.D_eff
+                )
+            # Calculate the flux at the boundary using the updated Cauchy value
+            right_bound_flux = (
+                (
+                    self.stencil[0] * self.cauchy_val[1]
+                    + self.stencil[1] * u_main[-1, :]
+                ).unsqueeze(0)
+                * self.D_eff
+                * ret_inv[-1, :]
+            )
+
+        # Calculate the fluxes of each control volume with its right neighboring cell
+        right_neighbors = (
+            (self.stencil[0] * u_main[1:, :] + self.stencil[1] * u_main[:-1, :])
+            * self.D_eff
+            * ret_inv[:-1, :]
+        )
+        # Concatenate the right neighbors fluxes with the right boundary fluxes
+        right_flux = torch.cat((right_neighbors, right_bound_flux))
+
+        # Top Boundary Condition
+        if self.dirichlet_bool[2]:
+            # If Dirichlet, calculate the flux at the boundary using the
+            # Dirichlet value as a constant
+            top_bound_flux = (
+                (
+                    self.stencil[0] * self.dirichlet_val[2]
+                    + self.stencil[1] * u_main[:, 0]
+                ).unsqueeze(1)
+                * self.D_eff
+                * ret_inv[:, 0]
+            )
+
+        elif self.neumann_bool[2]:
+            # If Neumann, set the Neumann value as the flux at the boundary
+            top_bound_flux = torch.cat(
+                self.Nx * [self.neumann_val[2].unsqueeze(0)]
+            ).unsqueeze(1)
+
+        elif self.cauchy_bool[2]:
+            # If Cauchy, first set the value to be equal to the initial condition
+            # at t = 0.0, otherwise update the value according to the previous
+            # time step value
+            if t == 0.0:
+                self.cauchy_val[2] = self.u0[:, 0]
+            else:
+                self.cauchy_val[2] = (
+                    (u_main[:, 0] - self.cauchy_val[2]) * self.cauchy_mult * self.D_eff
+                )
+            # Calculate the flux at the boundary using the updated Cauchy value
+            top_bound_flux = (
+                (
+                    self.stencil[0] * self.cauchy_val[2]
+                    + self.stencil[1] * u_main[:, 0]
+                ).unsqueeze(1)
+                * self.D_eff
+                * ret_inv[:, 0]
+            )
+
+        # Calculate the fluxes of each control volume with its top neighboring cell
+        top_neighbors = (
+            (self.stencil[0] * u_main[:, :-1] + self.stencil[1] * u_main[:, 1:])
+            * self.D_eff
+            * ret_inv[:, 1:]
+        )
+        # Concatenate the top boundary fluxes with the top neighbors fluxes
+        top_flux = torch.cat((top_bound_flux, top_neighbors), dim=1)
+
+        # Bottom Boundary Condition
+        if self.dirichlet_bool[3]:
+            # If Dirichlet, calculate the flux at the boundary using the
+            # Dirichlet value as a constant
+            bottom_bound_flux = (
+                (
+                    self.stencil[0] * self.dirichlet_val[3]
+                    + self.stencil[1] * u_main[:, -1]
+                ).unsqueeze(1)
+                * self.D_eff
+                * ret_inv[:, -1]
+            )
+
+        elif self.neumann_bool[3]:
+            # If Neumann, set the Neumann value as the flux at the boundary
+            bottom_bound_flux = torch.cat(
+                self.Nx * [self.neumann_val[3].unsqueeze(0)]
+            ).unsqueeze(1)
+
+        elif self.cauchy_bool[3]:
+            # If Cauchy, first set the value to be equal to the initial condition
+            # at t = 0.0, otherwise update the value according to the previous
+            # time step value
+            if t == 0.0:
+                self.cauchy_val[3] = self.u0[:, -1]
+            else:
+                self.cauchy_val[3] = (
+                    (u_main[:, -1] - self.cauchy_val[3]) * self.cauchy_mult * self.D_eff
+                )
+            # Calculate the flux at the boundary using the updated Cauchy value
+            bottom_bound_flux = (
+                (
+                    self.stencil[0] * self.cauchy_val[3]
+                    + self.stencil[1] * u_main[:, -1]
+                ).unsqueeze(1)
+                * self.D_eff
+                * ret_inv[:, -1]
+            )
+
+        # Calculate the fluxes of each control volume with its bottom neighboring cell
+        bottom_neighbors = (
+            (self.stencil[0] * u_main[:, 1:] + self.stencil[1] * u_main[:, :-1])
+            * self.D_eff
+            * ret_inv[:, :-1]
+        )
+        # Concatenate the bottom neighbors fluxes with the bottom boundary fluxes
+        bottom_flux = torch.cat((bottom_neighbors, bottom_bound_flux), dim=1)
+
+        # Integrate all fluxes at all control volume boundaries
+        flux = left_flux + right_flux + top_flux + bottom_flux
+
+        return flux
+
 
 
 def train_network(

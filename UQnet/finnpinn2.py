@@ -1,17 +1,120 @@
 import argparse
 import os
 import random
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import params
 import torch
 import torch.nn as nn
-from lib import EarlyStopper, Flux_Kernels, load_data
+from lib import EarlyStopper, Flux_Kernels, Flux_Kernels_No_Ret, load_data
 from scipy.optimize import bisect
-from torchdiffeq import odeint
+
+clear_dirs = False
+
+# MODEL NAME & SETTING
+model_name = "syn_freundlich_01"
+main_path = Path().cwd()
+model_path = main_path / model_name
+if clear_dirs and model_path.exists():
+    shutil.rmtree(model_path)
+model_path.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass
+class Params:
+    model_name = model_name
+    main_path = main_path
+    model_path = model_path
+
+    # NETWORK HYPER-PARAMETERS
+    flux_layers = 3  # number of hidden layers for the NN in the flux kernels
+    state_layers = 3  # number of hidden layers for the NN in the state kernels
+    flux_nodes = 15  # number of hidden nodes per layer for the NN in the flux kernels
+    state_nodes = 15  # number of hidden nodes per layer for the NN in the flux kernels
+    error_mult = 1  # multiplier for the squared error in the loss function calculation
+    breakthrough_mult = 1  # multiplier for the breakthrough curve error in the loss function calculation
+    profile_mult = 1  # multiplier for the concentration profile error in the loss function calculation
+    phys_mult = 100  # multiplier for the physical regularization in the loss function calculation
+    epochs = 100  # maximum epoch for training
+    lbfgs_optim = True  # Use L-BFGS as optimizer, else use ADAM
+    train_breakthrough = False  # Train using only breakthrough curve data
+    linear = False  # Training data generated with the linear isotherm
+    freundlich = True  # Training data generated with the freundlich isotherm
+    langmuir = False  # Training data generated with the langmuir isotherm
+
+    # SIMULATION-RELATED INPUTS
+    num_vars = 2
+
+    # Soil Parameters
+    D = 0.0005  # effective diffusion coefficient [m^2/day]
+    por = 0.29  # porosity [-]
+    rho_s = 2880  # bulk density [kg/m^3]
+    Kf = 1.016 / rho_s  # freundlich's K [(m^3/kg)^nf]
+    nf = 0.874  # freundlich exponent [-]
+    smax = 1 / 1700  # sorption capacity [m^3/kg]
+    Kl = 1  # half-concentration [kg/m^3]
+    Kd = 0.429 / 1000  # organic carbon partitioning [m^3/kg]
+    solubility = 1.0  # top boundary value [kg/m^3]
+
+    # Simulation Domain
+    X = 1.0  # length of sample [m]
+    dx = 0.04  # length of discrete control volume [m]
+    T = 10000  # simulation time [days]
+    dt = 5  # time step [days]
+    Nx = int(X / dx + 1)
+    Nt = int(T / dt + 1)
+    cauchy_val = dx
+
+    # Inputs for Flux Kernels
+    ## Set number of hidden layers and hidden nodes
+    num_layers_flux = [flux_layers, flux_layers]
+    num_nodes_flux = [flux_nodes, flux_nodes]
+    ## Set numerical stencil to be learnable or not
+    learn_stencil = [False, False]
+    ## Effective diffusion coefficient for each variable
+    # D_eff = [D / (dx**2), D * por / (rho_s/1000) / (dx**2)]
+    D_eff = [D / (dx**2), 0.25]
+    ## Set diffusion coefficient to be learnable or not
+    learn_coeff = [False, True]
+    ## Set if diffusion coefficient to be approximated as a function
+    is_retardation_a_func = [True, False]
+    ## Normalizer for functions that are approximated with a NN
+    p_exp_flux = [0.0, 0.0]
+    ## Set the variable index to be used when calculating the fluxes
+    flux_calc_idx = [0, 0]
+    ## Set the variable indices necessary to calculate the diffusion
+    ## coefficient function
+    flux_couple_idx = [0, 0]
+    ## Set boundary condition types
+    dirichlet_bool = [[True, False, False, False], [True, False, False, False]]
+    neumann_bool = [[False, False, True, True], [False, False, True, True]]
+    cauchy_bool = [[False, True, False, False], [False, True, False, False]]
+    ## Set the Dirichlet and Neumann boundary values if necessary,
+    ## otherwise set = 0
+    dirichlet_val = [[solubility, 0.0, 0.0, 0.0], [solubility, 0.0, 0.0, 0.0]]
+    neumann_val = [[0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]
+    ## Set multiplier for the Cauchy boundary condition if necessary
+    ## (will be multiplied with D_eff in the flux kernels), otherwise set = 0
+    cauchy_mult = [dx, dx]
+
+    # Inputs for State Kernels
+    ## Set number of hidden layers and hidden nodes
+    num_layers_state = [state_layers, state_layers]
+    num_nodes_state = [state_nodes, state_nodes]
+    ## Normalizer for the reaction functions that are approximated with a NN
+    p_exp_state = [0.0, 0.0]
+    ## Set the variable indices necessary to calculate the reaction function
+    state_couple_idx = [0, 1]
+
+
+params0 = Params()
+params1 = Params()
+params2 = Params()
 
 
 class CL_dataLoader:
@@ -179,6 +282,11 @@ def create_PI_training_data(
 def train_network(
     model, optimizer, criterion, train_loader, val_loader, max_epochs: int
 ) -> None:
+    """
+    Train network
+    Args:
+        model (_type_): Concentration prediction model
+    """
     early_stopper = EarlyStopper(patience=300, verbose=False)
 
     def closure():
@@ -187,10 +295,14 @@ def train_network(
             optimizer.zero_grad()
             output = model(data)
             loss = criterion(output, target)
+            u_ret = torch.linspace(0.0, 1.0, 100).view(-1, 1)
+            ret_inv_pred = model.retardation_inv_scaled(u_ret)
+            loss += torch.sum(
+                torch.relu(ret_inv_pred[:-1] - ret_inv_pred[1:])
+            )
             loss.backward()
 
         return loss
-
 
     for epoch in range(1, max_epochs + 1):
         # Training phase
@@ -287,14 +399,14 @@ class CL_trainer:
             val_loader=[data_val_up],
             max_epochs=self.configs["Max_iter"],
         )
-        train_network(
-            model=self.networks["down"],
-            optimizer=self.optimizers["down"],
-            criterion=nn.MSELoss(),
-            train_loader=[data_train_down],
-            val_loader=[data_val_down],
-            max_epochs=self.configs["Max_iter"],
-        )
+        # train_network(
+        #     model=self.networks["down"],
+        #     optimizer=self.optimizers["down"],
+        #     criterion=nn.MSELoss(),
+        #     train_loader=[data_train_down],
+        #     val_loader=[data_val_down],
+        #     max_epochs=self.configs["Max_iter"],
+        # )
 
     def eval_networks(self, x, as_numpy: bool = False) -> dict[str, Any]:
         with torch.no_grad():
@@ -326,12 +438,32 @@ class UQ_Net_mean(nn.Module):
                 nn.init.normal_(m.weight, mean=0.1, std=0.1)
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x):
+        self.u0 = torch.zeros(params1.num_vars, params1.Nx, 1)
+        self.flux_kernel_diss = Flux_Kernels(
+            self.u0[0].clone(), params1, 0, ret_inv_fun=self.retardation_inv_scaled
+        )
+        self.flux_kernel_tot = Flux_Kernels(
+            self.u0[1].clone(), params1, 1, ret_inv_fun=None
+        )
+
+    def dudt_fun(self, t, u):
+        flux_diss = self.flux_kernel_diss(u[[0]], u[[0]], t)
+        flux_tot = self.flux_kernel_tot(u[[0]], u[[0]], t)
+        return torch.stack([flux_diss, flux_tot])
+
+    def retardation_inv_scaled(self, x):
         x = torch.relu(self.inputLayer(x))
         for i in range(len(self.fcs)):
             x = torch.relu(self.fcs[i](x))
         x = self.outputLayer(x)
         return x
+
+    def forward(self, t):
+        # return odeint(self.dudt_fun, self.u0, t, rtol=1e-5, atol=1e-6)
+        # return torch.randn(size=(len(t), *self.u0.shape))
+        y = self.dudt_fun(t[0], self.u0).unsqueeze(0)
+        y = y.repeat(len(t), 1, 1, 1)
+        return y
 
 
 class UQ_Net_std(nn.Module):
@@ -363,7 +495,26 @@ class UQ_Net_std(nn.Module):
         else:
             self.custom_bias = torch.nn.Parameter(torch.tensor([bias]))
 
-    def forward(self, x):
+        # self.u0 = torch.zeros(params2.num_vars, params2.Nx, 1)
+        self.c_diss_0 = torch.zeros(params2.Nx, 1)
+        self.c_tot_0 = torch.zeros(params2.Nx, 1)
+        self.flux_kernel_diss = Flux_Kernels(
+            self.c_diss_0.clone(),
+            params2,
+            0,
+            ret_inv_fun=self.retardation_inv_scaled,
+            # self.u0[0].clone(), params2, 0, ret_inv_fun=self.retardation_inv_scaled
+        )
+        self.flux_kernel_tot = Flux_Kernels_No_Ret()
+        # self.flux_kernel_tot = Flux_Kernels(self.u0[1].clone(), params2, 1, ret_inv_fun=None)
+
+    def dudt_fun(self, t, u):
+        flux_diss = self.flux_kernel_diss(u[0].clone(), u[0].clone(), t)
+        flux_tot = self.flux_kernel_tot(u[0].clone(), u[0].clone(), t)
+        # return torch.stack([flux_diss, flux_diss])
+        return torch.stack([flux_diss, flux_tot])
+
+    def retardation_inv_scaled(self, x):
         x = torch.relu(self.inputLayer(x))
         for i in range(len(self.fcs)):
             x = torch.relu(self.fcs[i](x))
@@ -371,6 +522,13 @@ class UQ_Net_std(nn.Module):
         x = x + self.custom_bias
         x = torch.sqrt(torch.square(x) + 0.2)
         return x
+
+    def forward(self, t):
+        # return odeint(self.dudt_fun, self.u0, t, rtol=1e-5, atol=1e-6)
+        # return torch.randn(size=(len(t), *self.u0.shape))
+        y = self.dudt_fun(t[0], torch.stack((self.c_diss_0, self.c_tot_0))).unsqueeze(0)
+        y = y.repeat(len(t), 1, 1, 1)
+        return y
 
 
 def main():
@@ -386,59 +544,28 @@ def main():
     parser.add_argument("--quantile", type=float, default=0.95)
     args = parser.parse_args()
 
+    cfg = Params()
+
     ##########################################################
     ################## Data Loading Section ##################
     ##########################################################
-    data_dir = "./datasets/UCI_datasets/"
-    dataLoader = CL_dataLoader(original_data_path=data_dir)
-    X, Y = dataLoader.load_single_dataset(args.data)
-    if len(Y.shape) == 1:
-        Y = Y.reshape(-1, 1)
-
-    # random split
-    xTrainValid, xTest, yTrainValid, yTest = train_test_split(
-        X, Y, test_size=0.1, random_state=1, shuffle=True
-    )
-    ## Split the validation data
-    xTrain, xValid, yTrain, yValid = train_test_split(
-        xTrainValid, yTrainValid, test_size=0.1, random_state=1, shuffle=True
-    )
-
-    ### Data normalization
-    scalar_x = StandardScaler()
-    scalar_y = StandardScaler()
-
-    xTrain = scalar_x.fit_transform(xTrain)
-    xValid = scalar_x.fit_transform(xValid)
-    xTest = scalar_x.transform(xTest)
-
-    yTrain = scalar_y.fit_transform(yTrain)
-    yValid = scalar_y.fit_transform(yValid)
-    yTest = scalar_y.transform(yTest)
-
-    ### To tensors
-    xTrain = torch.Tensor(xTrain)
-    xValid = torch.Tensor(xValid)
-    xTest = torch.Tensor(xTest)
-
-    yTrain = torch.Tensor(yTrain)
-    yValid = torch.Tensor(yValid)
-    yTest = torch.Tensor(yTest)
-
-    print(xTrain.shape)
-    print(xValid.shape)
-    print(xTest.shape)
-    print(yTrain.shape)
-    print(yValid.shape)
-    print(yTest.shape)
+    X = np.linspace(0.0, cfg.T, cfg.Nt)
+    Y = load_data("freundlich").float().numpy()
+    # print(X.dtype)
+    # print(Y.dtype)
     # exit()
+    test_split_index = 51
+    xTrain = torch.from_numpy(X[:test_split_index].copy())
+    yTrain = torch.from_numpy(Y[:test_split_index].copy())
+    xValid = torch.from_numpy(X[test_split_index:].copy())
+    yValid = torch.from_numpy(Y[test_split_index:].copy())
 
     #########################################################
     ############## End of Data Loading Section ##############
     #########################################################
 
-    num_inputs = dataLoader.getNumInputsOutputs(xTrain)
-    num_outputs = dataLoader.getNumInputsOutputs(yTrain)
+    num_inputs = 1
+    num_outputs = 1
 
     configs = {}
     ### Some other general input info
@@ -458,7 +585,7 @@ def main():
     configs["num_neurons_mean"] = [50]  # hidden layer(s) for the 'MEAN' network
     configs["num_neurons_up"] = [50]  # hidden layer(s) for the 'UP' network
     configs["num_neurons_down"] = [50]  # hidden layer(s) for the 'DOWN' network
-    configs["Max_iter"] = 5000  # 5000,
+    configs["Max_iter"] = 1  # 5000,
     random.seed(configs["seed"])
     np.random.seed(configs["seed"])
     torch.manual_seed(configs["seed"])
