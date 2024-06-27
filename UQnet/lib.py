@@ -90,8 +90,6 @@ class Flux_Kernels(nn.Module):
         self.Ny = u0.size(1)
         self.u0 = u0
 
-        self.device = cfg.device
-
         # Variables that act as switch to use different types of boundary
         # condition
         # Each variable consists of boolean values at all 2D domain boundaries:
@@ -109,30 +107,30 @@ class Flux_Kernels(nn.Module):
         # For 1D, only the first two values matter, set the last two values to
         # be no-flux boundaries
         if torch.is_tensor(cfg.dirichlet_val[var_idx]):
-            self.dirichlet_val = cfg.dirichlet_val[var_idx].to(cfg.device)
+            self.dirichlet_val = cfg.dirichlet_val[var_idx]
         else:
-            self.dirichlet_val = torch.tensor(cfg.dirichlet_val[var_idx]).to(cfg.device)
+            self.dirichlet_val = torch.tensor(cfg.dirichlet_val[var_idx])
 
         if torch.is_tensor(cfg.neumann_val[var_idx]):
-            self.neumann_val = cfg.neumann_val[var_idx].to(cfg.device)
+            self.neumann_val = cfg.neumann_val[var_idx]
         else:
-            self.neumann_val = torch.tensor(cfg.neumann_val[var_idx]).to(cfg.device)
+            self.neumann_val = torch.tensor(cfg.neumann_val[var_idx])
 
         # For Cauchy BC, the initial Cauchy value is set to be the initial
         # condition at each corresponding domain boundary, and will be updated
         # through time
         self.cauchy_val = []
-        self.cauchy_val.append(u0[0, :].to(cfg.device))
-        self.cauchy_val.append(u0[-1, :].to(cfg.device))
-        self.cauchy_val.append(u0[:, 0].to(cfg.device))
-        self.cauchy_val.append(u0[:, -1].to(cfg.device))
+        self.cauchy_val.append(u0[0, :])
+        self.cauchy_val.append(u0[-1, :])
+        self.cauchy_val.append(u0[:, 0])
+        self.cauchy_val.append(u0[:, -1])
 
         # Set the Cauchy BC multiplier (to be multiplied with the gradient of
         # the unknown variable and the diffusion coefficient)
         if torch.is_tensor(cfg.cauchy_mult[var_idx]):
-            self.cauchy_mult = cfg.cauchy_mult[var_idx].to(cfg.device)
+            self.cauchy_mult = cfg.cauchy_mult[var_idx]
         else:
-            self.cauchy_mult = torch.tensor(cfg.cauchy_mult[var_idx]).to(cfg.device)
+            self.cauchy_mult = torch.tensor(cfg.cauchy_mult[var_idx])
 
         # If numerical stencil is to be learned, initialize to +1 and -1 with
         # a standard deviation of 0.1 each, otherwise set it to fixed values
@@ -150,9 +148,9 @@ class Flux_Kernels(nn.Module):
             self.stencil = torch.tensor([1.0, -1.0])
 
         if torch.is_tensor(cfg.D_eff[var_idx]):
-            self.D_eff = cfg.D_eff[var_idx].to(cfg.device)
+            self.D_eff = cfg.D_eff[var_idx]
         else:
-            self.D_eff = torch.tensor(cfg.D_eff[var_idx]).to(cfg.device)
+            self.D_eff = torch.tensor(cfg.D_eff[var_idx])
         if cfg.learn_coeff[var_idx]:
             self.D_eff = nn.Parameter(torch.tensor([self.D_eff], dtype=torch.float))
 
@@ -161,9 +159,9 @@ class Flux_Kernels(nn.Module):
         # Extract value of the normalizing constant to be applied to the output
         # of the NN that predicts the diffusion coefficient function
         if torch.is_tensor(cfg.p_exp_flux[var_idx]):
-            self.p_exp = cfg.p_exp_flux[var_idx].to(cfg.device)
+            self.p_exp = cfg.p_exp_flux[var_idx]
         else:
-            self.p_exp = torch.tensor(cfg.p_exp_flux[var_idx]).to(cfg.device)
+            self.p_exp = torch.tensor(cfg.p_exp_flux[var_idx])
 
         # Initialize a NN to predict retardation factor as a function of
         # the unknown variable if necessary
@@ -195,6 +193,11 @@ class Flux_Kernels(nn.Module):
         """
 
         # Reshape the input dimension for the retardation model into [Nx, Ny, num_features]
+        # print("="*100)
+        # print({u_main.shape, u_coupled.shape})
+        # print("="*100)
+        if u_coupled.shape[0] != 1:
+            u_coupled = u_coupled.unsqueeze(0)
         u_coupled = u_coupled.permute(1, 2, 0)
 
         # Calculate the flux multiplier (retardation function) if set
@@ -203,8 +206,6 @@ class Flux_Kernels(nn.Module):
             ret_inv = self.ret_inv_fun(u_coupled).squeeze(2) * 10**self.p_exp
         else:
             ret_inv = torch.ones(self.Nx, self.Ny)
-
-        ret_inv = ret_inv.to(self.device)
 
         # Squeeze the u_main dimension into [Nx, Ny]
         u_main = u_main.squeeze(0)
@@ -233,7 +234,7 @@ class Flux_Kernels(nn.Module):
             # at t = 0.0, otherwise update the value according to the previous
             # time step value
             if t == 0.0:
-                self.cauchy_val[0] = self.u0[0, :].to(self.device)
+                self.cauchy_val[0] = self.u0[0, :]
             else:
                 self.cauchy_val[0] = (
                     (u_main[0, :] - self.cauchy_val[0]) * self.cauchy_mult * self.D_eff
@@ -281,7 +282,7 @@ class Flux_Kernels(nn.Module):
             # at t = 0.0, otherwise update the value according to the previous
             # time step value
             if t == 0.0:
-                self.cauchy_val[1] = self.u0[-1, :].to(self.device)
+                self.cauchy_val[1] = self.u0[-1, :]
             else:
                 self.cauchy_val[1] = (
                     (u_main[-1, :] - self.cauchy_val[1]) * self.cauchy_mult * self.D_eff
@@ -329,7 +330,7 @@ class Flux_Kernels(nn.Module):
             # at t = 0.0, otherwise update the value according to the previous
             # time step value
             if t == 0.0:
-                self.cauchy_val[2] = self.u0[:, 0].to(self.device)
+                self.cauchy_val[2] = self.u0[:, 0]
             else:
                 self.cauchy_val[2] = (
                     (u_main[:, 0] - self.cauchy_val[2]) * self.cauchy_mult * self.D_eff
@@ -377,7 +378,7 @@ class Flux_Kernels(nn.Module):
             # at t = 0.0, otherwise update the value according to the previous
             # time step value
             if t == 0.0:
-                self.cauchy_val[3] = self.u0[:, -1].to(self.device)
+                self.cauchy_val[3] = self.u0[:, -1]
             else:
                 self.cauchy_val[3] = (
                     (u_main[:, -1] - self.cauchy_val[3]) * self.cauchy_mult * self.D_eff
